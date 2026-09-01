@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      NOTE: targeting net8.0-windows only because that's the SDK available in
+      this sandbox (no net10 SDK/workload installable here). EnableWindowsTargeting
+      allows building the Windows-targeting WinExe on non-Windows machines/CI (it
+      pulls the Windows targeting packs from NuGet); the switch is harmless on
+      Windows. On your dev machine, retarget to net10.0-windows — one-line change,
+      no code changes expected. (Runtime remains Windows-only: WinForms.)
+
+      Code-only UI (no resx/designer), like DeployToolkit.AppKit. Referencing
+      DeployToolkit.AppKit transitively brings DeployToolkit.Core,
+      DeployToolkit.Core.EfCore and DeployToolkit.Core.Git; the explicit
+      DeployToolkit.Core reference documents the direct dependency.
+    -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>DeployToolkit.Packager</RootNamespace>
+    <AssemblyName>DeployToolkit.Packager</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeployToolkit.AppKit\DeployToolkit.AppKit.csproj" />
+    <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+  </ItemGroup>
+
+</Project>

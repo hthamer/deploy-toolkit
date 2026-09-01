@@ -1,0 +1,45 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup />
+  <ItemGroup>
+    <Compile Update="ComponentPickerDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="MainForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="PackagerWizardForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="ReconcileDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="StalePackagesDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="Steps\StepBuild.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Steps\StepDelta.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Steps\StepDiff.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Steps\StepDone.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Steps\StepFolder.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Steps\StepPublish.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Steps\StepScripts.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Steps\WizardStep.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+  </ItemGroup>
+</Project>

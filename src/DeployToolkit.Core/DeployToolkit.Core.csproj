@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      NOTE: targeting net8.0 here only because that's what's available in this
+      sandbox (no NuGet access to pull the net10.0 workload/SDK). On your dev
+      machine, retarget to net10.0-windows once you add the WinForms/IIS/EF Core
+      pieces — the code in this project has no OS-specific or version-specific
+      APIs, so the retarget is a one-line change.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.Core</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+</Project>

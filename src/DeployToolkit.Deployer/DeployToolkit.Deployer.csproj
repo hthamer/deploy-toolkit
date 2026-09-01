@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      NOTE: targeting net8.0-windows only because that's the SDK available in
+      this sandbox (no net10 SDK/workload installable here). EnableWindowsTargeting
+      allows building the Windows-targeting WinExe on non-Windows machines/CI (it
+      pulls the Windows targeting packs from NuGet); the switch is harmless on
+      Windows. On your dev machine, retarget to net10.0-windows — one-line change,
+      no code changes expected. (Runtime remains Windows-only: WinForms.)
+
+      Code-only UI (no resx/designer), like DeployToolkit.AppKit and
+      DeployToolkit.Packager. Referencing DeployToolkit.AppKit transitively brings
+      DeployToolkit.Core, DeployToolkit.Core.EfCore and DeployToolkit.Core.Git;
+      the explicit DeployToolkit.Core reference documents the direct dependency.
+      Core.Windows (IIS hooks + DPAPI), Core.Database (SQL runner options) and
+      Core.Targets.Plesk (SFTP executor) are the target-specific engines the
+      Deployer composes (plan §7 / §11).
+    -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>DeployToolkit.Deployer</RootNamespace>
+    <AssemblyName>DeployToolkit.Deployer</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeployToolkit.AppKit\DeployToolkit.AppKit.csproj" />
+    <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+    <ProjectReference Include="..\DeployToolkit.Core.Windows\DeployToolkit.Core.Windows.csproj" />
+    <ProjectReference Include="..\DeployToolkit.Core.Database\DeployToolkit.Core.Database.csproj" />
+    <ProjectReference Include="..\DeployToolkit.Core.Targets.Plesk\DeployToolkit.Core.Targets.Plesk.csproj" />
+  </ItemGroup>
+
+</Project>

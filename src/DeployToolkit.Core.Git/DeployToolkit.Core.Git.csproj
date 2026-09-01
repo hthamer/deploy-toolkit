@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Kept on net8.0 to match DeployToolkit.Core. When you retarget the
+      solution to net10.0-windows on your dev machine (see the note in
+      DeployToolkit.Core.csproj), LibGit2Sharp 0.27.x keeps working as-is —
+      no package version bump required. The native libgit2 binaries for
+      win-x64 ship inside LibGit2Sharp.NativeBinaries, which is why the
+      self-contained Packager exe needs no system git installed.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.Core.Git</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The self-test pins internal pure helpers (e.g. auth-failure text
+         detection) that are intentionally not public API. -->
+    <InternalsVisibleTo Include="DeployToolkit.Core.Git.SelfTest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- In-process git: fetch/pull/status with zero shell-outs (plan §5).
+         No git.exe required on the build machine; nothing at all required
+         on target machines. -->
+    <PackageReference Include="LibGit2Sharp" Version="0.27.2" />
+  </ItemGroup>
+
+</Project>

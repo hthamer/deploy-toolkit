@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Kept on net8.0 to match DeployToolkit.Core. Everything in this project
+      is Windows-only AT RUNTIME (DPAPI, Microsoft.Web.Administration) but
+      compiles fine anywhere, so CI/sandbox builds still work; the
+      self-tests guard with OperatingSystem.IsWindows() and skip there.
+      Retarget to net10.0-windows along with the rest of the solution on
+      your dev machine (see the note in DeployToolkit.Core.csproj) — no
+      package bumps required.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.Core.Windows</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+    <!-- The DB-script hook reads db/*.sql out of the package zip and runs
+         them through the Phase 8 runner (Microsoft.Data.SqlClient). -->
+    <ProjectReference Include="..\DeployToolkit.Core.Database\DeployToolkit.Core.Database.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Windows-only AT RUNTIME, netstandard2.0 build: app-pool and site
+         enumeration/stop/start/recycle as a library API — never
+         Restart-WebAppPool or any PowerShell (plan §1/§8.3). -->
+    <PackageReference Include="Microsoft.Web.Administration" Version="11.1.0" />
+
+    <!-- DPAPI (DataProtectionScope.CurrentUser) for the Windows flavor of
+         the secret protector (plan §11/§12: secrets never in plain text).
+         Throws PlatformNotSupportedException on non-Windows at runtime —
+         the cross-platform AES-GCM protector in Core is the default. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

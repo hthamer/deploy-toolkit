@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.Database.SelfTest</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DeployToolkit.Core.Database\DeployToolkit.Core.Database.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The runner is provider-neutral (System.Data.Common only); SQLite is
+         the provider we can actually exercise in this sandbox. SQL Server /
+         Azure SQL paths (SqlServerScriptRunner + Microsoft.Data.SqlClient
+         from the library reference) are compile-verified only here. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+  </ItemGroup>
+
+</Project>

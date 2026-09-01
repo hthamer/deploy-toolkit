@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Kept on net8.0 to match DeployToolkit.Core. When you retarget the
+      solution to net10.0-windows on your dev machine (see the note in
+      DeployToolkit.Core.csproj), Microsoft.Data.SqlClient 7.x keeps working
+      as-is on net10.0 — no package version bump required.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.Core.Database</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SQL Server driver for plan §8.4 (database execution). GO splitting and
+         execution happen in-process; sqlcmd.exe is never spawned (plan §1
+         policy: no scripts or external tools on target machines). -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
+  </ItemGroup>
+
+</Project>

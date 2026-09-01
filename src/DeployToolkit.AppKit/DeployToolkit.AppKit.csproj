@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      NOTE: targeting net8.0/net8.0-windows only because that's the SDK
+      available in this sandbox (no net10 SDK/workload installable here).
+      EnableWindowsTargeting allows building the net8.0-windows asset on
+      non-Windows machines/CI (it pulls the Windows targeting packs from
+      NuGet); the switch is harmless on Windows. On your dev machine,
+      retarget to net10.0;net10.0-windows — one-line change, no code changes
+      expected.
+
+      Why two targets: the library is deliberately split into a PURE layer
+      (RegistryConnection.cs — settings + store factory, no UI types) and a
+      WinForms layer (all forms/controls). The net8.0 asset carries only the
+      pure layer so headless consumers (tools/DeployToolkit.AppKit.SelfTest,
+      CI on Linux) can run against it without the Microsoft.WindowsDesktop.App
+      shared framework, which does not exist off-Windows. Packager/Deployer
+      reference this project and automatically pick the net8.0-windows asset.
+    -->
+    <TargetFrameworks>net8.0;net8.0-windows</TargetFrameworks>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.AppKit</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
+  <!-- Pure (net8.0) asset: compile out everything that touches WinForms.
+       (UiMath.cs and UiText.cs are pure and compile into BOTH assets.) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <Compile Remove="AppTheme.cs;BusyDialog.cs;ClientsScreen.cs;ComponentEditorDialog.cs;ConnectionDialog.cs;GitCredentialsDialog.cs;GitSyncDialog.cs;Guard.cs;KeyValueDeltaGrid.cs;LogPane.cs;RunLogViewerForm.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+    <ProjectReference Include="..\DeployToolkit.Core.EfCore\DeployToolkit.Core.EfCore.csproj" />
+    <ProjectReference Include="..\DeployToolkit.Core.Git\DeployToolkit.Core.Git.csproj" />
+  </ItemGroup>
+
+</Project>

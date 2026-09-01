@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Kept on net8.0 to match DeployToolkit.Core. When you retarget the
+      solution to net10.0-windows on your dev machine (see the note in
+      DeployToolkit.Core.csproj), SSH.NET keeps working as-is — it is a
+      pure managed library with no native binaries, so no package version
+      bump and no extra payload for the self-contained Packager/Deployer
+      exes.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.Core.Targets.Plesk</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SFTP file transfer for Plesk shared hosting (plan §7). Package id
+         is literally "SSH.NET"; the C# namespace is Renci.SshNet. Pure
+         managed SSH implementation — upload-only traffic from inside the
+         toolkit's own process, never a spawned script or shell (plan §1
+         "no scripts on target machines"). -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+  </ItemGroup>
+
+</Project>

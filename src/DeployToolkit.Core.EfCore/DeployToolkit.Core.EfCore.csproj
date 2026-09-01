@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Kept on net8.0 to match DeployToolkit.Core. When you retarget the
+      solution to net10.0-windows on your dev machine (see the note in
+      DeployToolkit.Core.csproj), bump the EF Core package versions below
+      from 8.0.* to 10.0.* — the model, store, and migrations carry over
+      unchanged, then add one new migration for any type-mapping drift.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.Core.EfCore</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SQL Server is the registry DB per plan §2.2 / §13
+         (Azure SQL Database, or any reachable SQL Server / LocalDB). -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.11" />
+    <!-- Needed only at design time, for `dotnet ef migrations add`. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
