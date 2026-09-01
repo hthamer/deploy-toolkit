@@ -1183,6 +1183,72 @@ try
         && exPlain.Manifest.DeletedFiles.Contains("Gone.txt"));
 
     // ---------------------------------------------------------------
+    Console.WriteLine("== SensitiveFileFilter (appsettings.json / web.config never packaged) ==");
+    // Pure filter checks first — no registry IO.
+    Check("appsettings.json is sensitive", SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("appsettings.json"));
+    Check("web.config is sensitive", SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("web.config"));
+    Check("app.config is sensitive", SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("app.config"));
+    Check("appsettings.Development.json is sensitive (env variant)",
+        SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("appsettings.Development.json"));
+    Check("appsettings.Production.json is sensitive (env variant)",
+        SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("appsettings.Production.json"));
+    Check("appsettings.QA.json is sensitive (custom env variant)",
+        SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("appsettings.QA.json"));
+    Check("connectionstrings.json is sensitive",
+        SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("connectionstrings.json"));
+    Check("secrets.json is sensitive",
+        SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("secrets.json"));
+    Check("sensitive at a sub-path is still sensitive (wwwroot/appsettings.json)",
+        SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("wwwroot/appsettings.json"));
+    Check("sensitive with backslashes is still sensitive (Config\\web.config)",
+        SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("Config\\web.config"));
+    Check("case-insensitive: APPSETTINGS.JSON is sensitive",
+        SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("APPSETTINGS.JSON"));
+    Check("appsettings.json.bak is NOT sensitive (suffix differs)",
+        !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("appsettings.json.bak"));
+    Check("appsettings_example.json is NOT sensitive (underscore, not a known env variant)",
+        !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("appsettings_example.json"));
+    Check("appsettings.json.example is NOT sensitive (extra suffix)",
+        !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("appsettings.json.example"));
+    Check("plain .cs file is NOT sensitive",
+        !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("bin/App.dll"));
+    Check("empty/null path is NOT sensitive",
+        !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant("") && !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant(null!));
+
+    // End-to-end: a package build that would otherwise include appsettings.json
+    // and web.config drops them automatically (no ExcludedPaths needed — the
+    // policy is enforced centrally in PackageBuilder.BuildAsync).
+    var sensRegistry = new LocalFileRegistryStore(Path.Combine(workRoot, "sensitive-registry"));
+    var sensBuilder = new PackageBuilder(
+        sensRegistry, new JsonFileProjectMappingStore(Path.Combine(workRoot, "sensitive-mappings.json")));
+    var sensComponent = await sensBuilder.CreateClientAndComponentAsync(
+        Path.Combine(workRoot, "sensitive-project"), "ClientS", "Site", TargetType.IisLocal, "net48",
+        isSelfContained: false);
+
+    var sensPublish = Path.Combine(workRoot, "sensitive", "publish");
+    Directory.CreateDirectory(sensPublish);
+    File.WriteAllText(Path.Combine(sensPublish, "bin", "App.dll"), "app-v1");
+    File.WriteAllText(Path.Combine(sensPublish, "appsettings.json"), "{\"ConnectionStrings\":{...}}");
+    File.WriteAllText(Path.Combine(sensPublish, "appsettings.Production.json"), "{\"prod-secrets\":true}");
+    File.WriteAllText(Path.Combine(sensPublish, "web.config"), "<configuration><connectionStrings/></configuration>");
+    File.WriteAllText(Path.Combine(sensPublish, "index.html"), "<html/>");
+
+    var sensResult = await sensBuilder.BuildAsync(new PackageBuildRequest(
+        sensComponent.ComponentId, "1.0.0", sensPublish, Path.Combine(workRoot, "sensitive", "v1.zip")));
+
+    Check("appsettings.json never packaged (auto-excluded)",
+        sensResult.Manifest.Files.All(f => f.Path != "appsettings.json"));
+    Check("appsettings.Production.json never packaged (auto-excluded)",
+        sensResult.Manifest.Files.All(f => !string.Equals(f.Path, "appsettings.Production.json", StringComparison.OrdinalIgnoreCase)));
+    Check("web.config never packaged (auto-excluded)",
+        sensResult.Manifest.Files.All(f => f.Path != "web.config"));
+    Check("non-sensitive files still packaged (App.dll, index.html)",
+        sensResult.Manifest.Files.Any(f => f.Path == "bin/App.dll")
+        && sensResult.Manifest.Files.Any(f => f.Path == "index.html"));
+    Check("exactly 2 files packaged (App.dll + index.html, sensitive dropped)",
+        sensResult.Manifest.Files.Count == 2);
+
+    // ---------------------------------------------------------------
     Console.WriteLine("== ProjectTargetFrameworkReader (publish framework auto-detect) ==");
     var tfmRoot = Path.Combine(workRoot, "tfm");
     Directory.CreateDirectory(tfmRoot);

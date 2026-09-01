@@ -1,5 +1,6 @@
 using DeployToolkit.AppKit;
 using DeployToolkit.Core.Manifest;
+using DeployToolkit.Core.Packaging;
 
 namespace DeployToolkit.Packager.Steps;
 
@@ -10,6 +11,17 @@ namespace DeployToolkit.Packager.Steps;
 /// <see cref="PackageDraft.ExcludedPaths"/> and are honored by
 /// <c>PackageBuilder.BuildAsync</c>). Preview-only by design: the final
 /// delta is recomputed from disk at build time (deterministic).
+///
+/// <b>Sensitive-file policy</b>: <c>appsettings.json</c>, <c>web.config</c>,
+/// <c>app.config</c>, per-environment <c>appsettings.*.json</c>,
+/// <c>connectionstrings.json</c> and <c>secrets.json</c> are ALWAYS excluded
+/// — they are never shipped in a delta package (overwriting them on the
+/// target server is dangerous; the build-machine copies may carry local dev
+/// secrets, and the delta has no trace of the production values). These
+/// rows are rendered with a "Sensitive" change label, an unchecked + locked
+/// checkbox the user cannot toggle, and a tooltip explaining the policy.
+/// The exclusion is also enforced centrally in
+/// <see cref="PackageBuilder.BuildAsync"/> so it cannot be bypassed.
 /// </summary>
 internal sealed class StepDiff : WizardStep
 {
@@ -98,9 +110,12 @@ internal sealed class StepDiff : WizardStep
         var note = new Label
         {
             Text = "Preview only — the final delta is recomputed from disk at build time (deterministic). " +
-                   "Uncheck a row to exclude it from the package (also removes matching deletions).",
+                   "Uncheck a row to exclude it from the package (also removes matching deletions). " +
+                   "Rows marked 'Sensitive' (appsettings.json, web.config, appsettings.*.json, " +
+                   "connectionstrings.json, secrets.json) are always excluded and locked — they " +
+                   "are never published to avoid overwriting production secrets.",
             AutoSize = false,
-            Height = 36,
+            Height = 52,
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };
@@ -162,7 +177,10 @@ internal sealed class StepDiff : WizardStep
             return;
         }
 
-        // A fresh preview starts with everything included.
+        // A fresh preview starts with everything included — EXCEPT sensitive
+        // files (appsettings.json / web.config / ...), which are auto-excluded
+        // by policy and can never be included. The user's manual excludes from
+        // a previous visit are wiped here too (the grid is rebuilt on entry).
         Draft.ExcludedPaths.Clear();
 
         _baselineLabel.Text = _baselinePackageId is null
@@ -175,12 +193,42 @@ internal sealed class StepDiff : WizardStep
 
         foreach (var file in diff.ChangedOrNewFiles)
         {
+            // Sensitive-file policy: appsettings.json / web.config / etc. are
+            // ALWAYS excluded. Render the row with a "Sensitive" change label,
+            // an unchecked + LOCKED checkbox (read-only, can't be toggled), and
+            // auto-add to ExcludedPaths so the build drops it. The exclusion is
+            // ALSO enforced centrally in PackageBuilder.BuildAsync, so even a
+            // bypassed UI cannot ship these files.
+            var isSensitive = SensitiveFileFilter.IsSensitiveOrAppSettingsVariant(file.Path);
+            if (isSensitive)
+            {
+                Draft.ExcludedPaths.Add(file.Path);
+                var rowIdx = _grid.Rows.Add(false, file.Path, "Sensitive", FormatBytes(file.SizeBytes));
+                // Lock the checkbox + the whole row so the user can't toggle it.
+                _grid.Rows[rowIdx].Cells[0].ReadOnly = true;
+                _grid.Rows[rowIdx].DefaultCellStyle.ForeColor = Color.DimGray;
+                continue;
+            }
+
             var change = baselinePaths.Contains(file.Path) ? "Modified" : "Added";
             _grid.Rows.Add(true, file.Path, change, FormatBytes(file.SizeBytes));
         }
 
         foreach (var deleted in diff.DeletedFiles)
         {
+            // Sensitive deletions: the file was in the baseline but is gone now.
+            // Don't ship a "delete this" instruction either — leave the
+            // production sensitive file untouched. Same lock + auto-exclude.
+            var isSensitive = SensitiveFileFilter.IsSensitiveOrAppSettingsVariant(deleted);
+            if (isSensitive)
+            {
+                Draft.ExcludedPaths.Add(deleted);
+                var rowIdx = _grid.Rows.Add(false, deleted, "Sensitive", "—");
+                _grid.Rows[rowIdx].Cells[0].ReadOnly = true;
+                _grid.Rows[rowIdx].DefaultCellStyle.ForeColor = Color.DimGray;
+                continue;
+            }
+
             _grid.Rows.Add(true, deleted, "Deleted", "—");
         }
 
@@ -195,6 +243,21 @@ internal sealed class StepDiff : WizardStep
         var row = _grid.Rows[e.RowIndex];
         if (row.Cells[1].Value is not string path || path.Length == 0)
             return;
+
+        // Defense-in-depth: a sensitive file's checkbox is locked read-only,
+        // but if it's somehow toggled, force it back off and keep it excluded.
+        // The central policy in PackageBuilder.BuildAsync drops these anyway.
+        if (SensitiveFileFilter.IsSensitiveOrAppSettingsVariant(path))
+        {
+            if (row.Cells[0].Value is bool b && b)
+            {
+                row.Cells[0].Value = false;
+                _grid.Rows[e.RowIndex].Cells[0].ReadOnly = true;
+            }
+            Draft.ExcludedPaths.Add(path);
+            UpdateSummaryLabel();
+            return;
+        }
 
         var included = row.Cells[0].Value as bool? ?? true;
         if (included)
@@ -212,11 +275,19 @@ internal sealed class StepDiff : WizardStep
 
         var includedNew = diff.ChangedOrNewFiles.Count(f => !Draft.ExcludedPaths.Contains(f.Path));
         var includedDeleted = diff.DeletedFiles.Count(p => !Draft.ExcludedPaths.Contains(p));
-        var excluded = diff.ChangedOrNewFiles.Count - includedNew + (diff.DeletedFiles.Count - includedDeleted);
+
+        // Count the sensitive rows separately so the user can tell which
+        // exclusions are policy (can't override) vs manual (can toggle).
+        var sensitiveNew = diff.ChangedOrNewFiles.Count(SensitiveFileFilter.IsSensitiveOrAppSettingsVariant);
+        var sensitiveDeleted = diff.DeletedFiles.Count(SensitiveFileFilter.IsSensitiveOrAppSettingsVariant);
+        var sensitiveTotal = sensitiveNew + sensitiveDeleted;
+        var manualExcluded = (diff.ChangedOrNewFiles.Count - includedNew - sensitiveNew)
+            + (diff.DeletedFiles.Count - includedDeleted - sensitiveDeleted);
 
         _summaryLabel.Text =
             $"{includedNew} changed/new, {includedDeleted} deleted, total {includedNew + includedDeleted}" +
-            (excluded > 0 ? $"   ({excluded} excluded manually)" : string.Empty);
+            (sensitiveTotal > 0 ? $"   ({sensitiveTotal} sensitive — always excluded)" : string.Empty) +
+            (manualExcluded > 0 ? $"   ({manualExcluded} excluded manually)" : string.Empty);
     }
 
     private static string FormatBytes(long bytes) =>

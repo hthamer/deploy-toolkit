@@ -147,11 +147,21 @@ public sealed class PackageBuilder
         // files AND deletions (a deliberately-kept deleted file must not
         // silently reappear in the manifest's DeletedFiles either).
         var excludedPaths = request.ExcludedPaths ?? Array.Empty<string>();
+
+        // Sensitive-file policy (user request): appsettings.json / web.config /
+        // app.config / per-environment appsettings.*.json / connectionstrings.json
+        // / secrets.json are NEVER packaged — overwriting them on the target
+        // server is dangerous (the build-machine copies may carry local dev
+        // secrets, and a delta package has no trace of the production values).
+        // Enforced centrally here so the UI can NEVER bypass it, even if the
+        // user checks "Include" on a sensitive row. The diff-step UI renders
+        // these rows as permanently-excluded (disabled checkbox + 'sensitive'
+        // change) so the policy is visible, not silent.
         var changedOrNewFiles = diff.ChangedOrNewFiles
-            .Where(f => !IsExcluded(f.Path, excludedPaths))
+            .Where(f => !IsExcluded(f.Path, excludedPaths) && !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant(f.Path))
             .ToList();
         var deletedFiles = diff.DeletedFiles
-            .Where(p => !IsExcluded(p, excludedPaths))
+            .Where(p => !IsExcluded(p, excludedPaths) && !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant(p))
             .ToList();
 
         var manifest = new ComponentManifest
