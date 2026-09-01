@@ -38,6 +38,32 @@ internal sealed class StepPublish : WizardStep
     private readonly Button _cancelButton;
     private readonly LogPane _log;
 
+    // ---- Publish options (Visual Studio publish-wizard parity) ----
+    // Framework-specific structured options, shown/hidden based on the
+    // detected project kind. .NET Framework Web Applications get the
+    // precompile + App_Data checkboxes; modern .NET gets Single file +
+    // ReadyToRun. See DetectProjectKind(). These are NOT `readonly` because
+    // they are assigned via BuildPublishOptionsControls() (C# only allows
+    // `readonly` assignments in the constructor body / a field initializer,
+    // not in a method called from the constructor).
+    private CheckBox _precompileBox = null!;
+    private Button _configurePrecompileBtn = null!;
+    private CheckBox _excludeAppDataBox = null!;
+    private CheckBox _singleFileBox = null!;
+    private CheckBox _readyToRunBox = null!;
+    private Label _publishOptionsHint = null!;
+
+    /// <summary>The precompile sub-options (VS "Precompile Options" dialog
+    /// values). Session-level state — seeded with the VS defaults and edited
+    /// via the Configure… button. Not persisted to the registry (keeps the
+    /// change focused; precompile is a per-release decision for web apps).</summary>
+    private WebPrecompileOptions _precompileOptions = WebPrecompileOptions.Default;
+
+    /// <summary>Cached detection of whether the SELECTED project is a classic
+    /// .NET Framework Web Application (needs MSBuild, not dotnet publish).
+    /// Recomputed in DetectProjectKind() whenever the project changes.</summary>
+    private bool _isWebApp;
+
     private Client? _client;
     private string? _loadedClientId;
     private string? _discoveredFolder;
@@ -166,9 +192,50 @@ internal sealed class StepPublish : WizardStep
         _runtimeBox.TextChanged += (_, _) => UpdateSettingsSummary();
         AddField(settingsTable, ref settingsRow, "Target runtime:", _runtimeBox);
 
-        _optionsBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "e.g. -p:PublishSingleFile=true --nologo" };
+        _optionsBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Extra arguments (e.g. /p:Foo=bar --nologo or -p:PublishTrimmed=false)" };
         _optionsBox.TextChanged += (_, _) => UpdateSettingsSummary();
         AddField(settingsTable, ref settingsRow, "Additional options:", _optionsBox);
+
+        // ---- Publish options (Visual Studio publish-wizard parity) ----
+        // Structured, framework-specific checkboxes — the same options VS
+        // shows in its publish wizard. The free-text "Additional options"
+        // above stays for power-user verbatim args; these checkboxes are the
+        // first-class UI the user reported missing.
+        BuildPublishOptionsControls();
+        var publishOptionsStack = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoScroll = false,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(2, 2, 12, 6),
+        };
+        var precompileRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+        };
+        precompileRow.Controls.Add(_precompileBox);
+        precompileRow.Controls.Add(_configurePrecompileBtn);
+        publishOptionsStack.Controls.Add(precompileRow);
+        publishOptionsStack.Controls.Add(_excludeAppDataBox);
+        publishOptionsStack.Controls.Add(_singleFileBox);
+        publishOptionsStack.Controls.Add(_readyToRunBox);
+        publishOptionsStack.Controls.Add(_publishOptionsHint);
+        // Added manually (not via AddField) so the stack keeps AutoSize —
+        // AddField forces Dock=Fill, which can collapse an AutoSize
+        // FlowLayoutPanel inside an AutoSize TableLayoutPanel row.
+        settingsTable.Controls.Add(new Label
+        {
+            Text = "Publish options:",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(2, 6, 8, 2),
+        }, 0, settingsRow);
+        settingsTable.Controls.Add(publishOptionsStack, 1, settingsRow);
+        settingsRow++;
 
         _settingsSummary = new Label
         {
@@ -358,6 +425,11 @@ internal sealed class StepPublish : WizardStep
         if (_suppressSettingsEvents)
             return;
 
+        // Detect the project kind FIRST — it drives which publish options
+        // are visible and which publisher (dotnet vs msbuild) the run will
+        // use. Independent of the framework text below.
+        DetectProjectKind();
+
         var componentFramework = Draft.Component?.TargetFramework;
         var detected = new List<string>();
 
@@ -432,6 +504,141 @@ internal sealed class StepPublish : WizardStep
         _frameworkHint.Text = isNetFramework
             ? "Auto-detected from the selected project. Self-contained is not available for .NET Framework targets."
             : "Auto-detected from the selected project — type to override.";
+    }
+
+    // ---------------------------------------------------------------
+    // Publish options (Visual Studio publish-wizard parity)
+
+    /// <summary>Constructs the structured publish-options controls (kept
+    /// here so the constructor body stays readable). Visibility is toggled
+    /// later by <see cref="DetectProjectKind"/> based on the selected
+    /// project — only the options that apply to the project's toolchain are
+    /// shown, the rest are hidden AND unchecked so they never leak into the
+    /// generated command line.</summary>
+    private void BuildPublishOptionsControls()
+    {
+        // .NET Framework Web Application options (published via MSBuild + WPP).
+        _precompileBox = new CheckBox
+        {
+            Text = "Precompile during publishing",
+            AutoSize = true,
+        };
+        _precompileBox.CheckedChanged += (_, _) =>
+        {
+            _configurePrecompileBtn.Enabled = _precompileBox.Checked;
+            UpdateSettingsSummary();
+        };
+
+        _configurePrecompileBtn = new Button
+        {
+            Text = "Configure…",
+            Enabled = false,
+            AutoSize = true,
+        };
+        AppTheme.StyleButton(_configurePrecompileBtn);
+        _configurePrecompileBtn.Click += (_, _) => OpenPrecompileOptions();
+
+        _excludeAppDataBox = new CheckBox
+        {
+            Text = "Exclude files from the App_Data folder",
+            AutoSize = true,
+        };
+        _excludeAppDataBox.CheckedChanged += (_, _) => UpdateSettingsSummary();
+
+        // Modern .NET options (published via dotnet publish).
+        _singleFileBox = new CheckBox
+        {
+            Text = "Produce Single file",
+            AutoSize = true,
+        };
+        _singleFileBox.CheckedChanged += (_, _) => UpdateSettingsSummary();
+
+        _readyToRunBox = new CheckBox
+        {
+            Text = "Enable ReadyToRun compilation",
+            AutoSize = true,
+        };
+        _readyToRunBox.CheckedChanged += (_, _) => UpdateSettingsSummary();
+
+        _publishOptionsHint = new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.DimGray,
+            Text = string.Empty,
+        };
+    }
+
+    /// <summary>Detects whether the SELECTED project is a classic .NET
+    /// Framework Web Application (the kind that imports
+    /// Microsoft.WebApplication.targets and needs the full Visual Studio
+    /// MSBuild, not <c>dotnet publish</c>) and toggles the framework-specific
+    /// publish options accordingly:
+    /// <list type="bullet">
+    ///  <item>.NET Framework Web App → show Precompile (+ Configure…) and
+    ///   Exclude App_Data; hide Single file / ReadyToRun; disable the target
+    ///   runtime (web apps don't use a RID — VS shows "(project default)"
+    ///   and makes it read-only too).</item>
+    ///  <item>Modern .NET → show Produce Single file / Enable ReadyToRun;
+    ///   hide the .NET Framework web options; enable the runtime box.</item>
+    /// </list>
+    /// Hidden options are also UNCHECKED so a stale tick on a now-hidden
+    /// checkbox can never leak into the generated command line.</summary>
+    private void DetectProjectKind()
+    {
+        var isWebApp = _projectBox.SelectedItem is string project
+            && project.Length > 0
+            && File.Exists(project)
+            && WebProjectDetector.IsNetFrameworkWebApp(project);
+        _isWebApp = isWebApp;
+
+        // .NET Framework Web Application options — visible only for web apps.
+        _precompileBox.Visible = isWebApp;
+        _configurePrecompileBtn.Visible = isWebApp;
+        _excludeAppDataBox.Visible = isWebApp;
+
+        // Modern .NET options — visible only for non-web (dotnet publish) projects.
+        _singleFileBox.Visible = !isWebApp;
+        _readyToRunBox.Visible = !isWebApp;
+
+        // Hidden = unchecked, so a stale tick never leaks into the command line.
+        if (!isWebApp)
+        {
+            _precompileBox.Checked = false;
+            _excludeAppDataBox.Checked = false;
+        }
+        else
+        {
+            _singleFileBox.Checked = false;
+            _readyToRunBox.Checked = false;
+        }
+
+        // Web apps don't use a runtime identifier — VS shows "(project
+        // default)" read-only. Mirror that so the user isn't tempted to pick
+        // a RID that msbuild would reject as an unknown switch.
+        if (isWebApp)
+        {
+            _suppressSettingsEvents = true;
+            try { _runtimeBox.Text = PortableRuntime; }
+            finally { _suppressSettingsEvents = false; }
+        }
+        _runtimeBox.Enabled = !isWebApp;
+
+        _publishOptionsHint.Text = isWebApp
+            ? "Published with Visual Studio MSBuild (Web Publishing Pipeline). These options map to /p:PrecompileBeforePublish and /p:ExcludeApp_Data."
+            : "Published with dotnet publish. These options map to -p:PublishSingleFile and -p:PublishReadyToRun.";
+    }
+
+    /// <summary>Opens the VS-style Precompile Options dialog seeded with the
+    /// current sub-options; stores the result back when the user OKs. The
+    /// Configure button is only enabled while Precompile is checked.</summary>
+    private void OpenPrecompileOptions()
+    {
+        using var dialog = new PrecompileOptionsDialog(_precompileOptions);
+        if (dialog.ShowDialog(Wizard) == DialogResult.OK && dialog.Result is { } result)
+        {
+            _precompileOptions = result;
+            UpdateSettingsSummary();
+        }
     }
 
     private void ScheduleComponentSave()
@@ -511,6 +718,11 @@ internal sealed class StepPublish : WizardStep
             return;
         }
 
+        // Re-confirm the project kind right before publishing — guarantees the
+        // msbuild/dotnet routing matches the actually-selected csproj even if
+        // detection was somehow skipped between selection and Run.
+        _isWebApp = WebProjectDetector.IsNetFrameworkWebApp(project);
+
         // A pending settings edit becomes the component's truth right now —
         // the publish below must use exactly what will be stored.
         _componentSaveTimer.Stop();
@@ -540,11 +752,24 @@ internal sealed class StepPublish : WizardStep
             if (Directory.Exists(outputDir))
                 await Task.Run(() => Directory.Delete(outputDir, recursive: true), _publishCts.Token);
 
-            var result = await DotNetPublisher.PublishAsync(
-                settings,
-                line => _log.AppendLine(line),
-                timeoutMinutes: 15,
-                _publishCts.Token);
+            // Route to the right publisher: .NET Framework Web Applications
+            // (classic csproj importing Microsoft.WebApplication.targets) need
+            // the full Visual Studio MSBuild + WPP targets — `dotnet publish`
+            // fails there with MSB4019 (missing Microsoft.WebApplication.targets)
+            // and "Nothing to do. None of the projects specified contain
+            // packages to restore" (packages.config is invisible to
+            // `dotnet restore`). Everything else goes through `dotnet publish`.
+            var result = _isWebApp
+                ? await MsBuildPublisher.PublishAsync(
+                    settings,
+                    line => _log.AppendLine(line),
+                    timeoutMinutes: 15,
+                    _publishCts.Token)
+                : await DotNetPublisher.PublishAsync(
+                    settings,
+                    line => _log.AppendLine(line),
+                    timeoutMinutes: 15,
+                    _publishCts.Token);
 
             if (IsDisposed || Wizard.IsDisposed)
                 return; // wizard closed mid-publish — nothing left to report to
@@ -599,7 +824,15 @@ internal sealed class StepPublish : WizardStep
     /// component's stored values only matter as the defaults those controls
     /// were seeded with). The RID is folded into the additional arguments as
     /// <c>-r &lt;rid&gt;</c> — the same convention
-    /// <see cref="PublishConfiguration.ToPublishSettings"/> uses.</summary>
+    /// <see cref="PublishConfiguration.ToPublishSettings"/> uses — but ONLY
+    /// for non-web projects: a .NET Framework Web Application is published
+    /// with MSBuild, which does not understand <c>-r</c> (and web apps don't
+    /// use a runtime identifier anyway). The structured publish-option
+    /// checkboxes (<see cref="ProduceSingleFile"/> / <see cref="ReadyToRun"/>
+    /// for modern .NET; <see cref="Precompile"/> / <see cref="ExcludeAppData"/>
+    /// for .NET Framework web apps) are populated only when their checkbox
+    /// is visible AND checked, so a stale tick on a hidden option never leaks
+    /// into the command line.</summary>
     private PublishSettings BuildPublishSettings(string projectPath, string outputDirectory)
     {
         var framework = _frameworkBox.Text.Trim();
@@ -607,7 +840,10 @@ internal sealed class StepPublish : WizardStep
         var runtime = _runtimeBox.Text.Trim();
 
         var additional = string.Empty;
-        if (runtime.Length > 0 && !string.Equals(runtime, PortableRuntime, StringComparison.OrdinalIgnoreCase))
+        // Web apps are published via MSBuild (no -r) — skip RID folding so a
+        // leftover runtime value can't produce a bogus switch msbuild rejects.
+        if (!_isWebApp &&
+            runtime.Length > 0 && !string.Equals(runtime, PortableRuntime, StringComparison.OrdinalIgnoreCase))
         {
             if (runtime.Contains(' '))
                 throw new ArgumentException("Target runtime must be a single runtime identifier (e.g. win-x64) or empty.");
@@ -617,13 +853,28 @@ internal sealed class StepPublish : WizardStep
         if (options.Length > 0)
             additional = additional.Length == 0 ? options : $"{additional} {options}";
 
+        // Structured publish options: only set when the relevant checkbox is
+        // visible (i.e., applicable to the detected project kind) AND checked.
+        bool? produceSingleFile = (_singleFileBox.Visible && _singleFileBox.Checked) ? true : null;
+        bool? readyToRun = (_readyToRunBox.Visible && _readyToRunBox.Checked) ? true : null;
+        bool? precompile = (_precompileBox.Visible && _precompileBox.Checked) ? true : null;
+        WebPrecompileOptions? precompileOptions = (_precompileBox.Visible && _precompileBox.Checked)
+            ? _precompileOptions
+            : null;
+        bool? excludeAppData = (_excludeAppDataBox.Visible && _excludeAppDataBox.Checked) ? true : null;
+
         return new PublishSettings(
             ProjectPath: projectPath,
             TargetFramework: framework.Length == 0 ? null : framework,
             SelfContained: !IsNetFrameworkTfm(framework) && _deployModeBox.SelectedIndex == 1,
             Configuration: _configurationBox.Text,
             OutputDirectory: outputDirectory,
-            AdditionalArguments: additional.Length == 0 ? null : additional);
+            AdditionalArguments: additional.Length == 0 ? null : additional,
+            ProduceSingleFile: produceSingleFile,
+            ReadyToRun: readyToRun,
+            Precompile: precompile,
+            PrecompileOptions: precompileOptions,
+            ExcludeAppData: excludeAppData);
     }
 
     private void UpdateSettingsSummary()
@@ -638,10 +889,18 @@ internal sealed class StepPublish : WizardStep
             Path.GetTempPath(), "DeployToolkit", "publish",
             $"{MakeSafeFileName(Draft.Component.Name)}-{NormalizeVersion(_versionBox.Text)}");
 
+        // Show the actual command the run will use: `msbuild` for .NET
+        // Framework Web Applications, `dotnet publish` for everything else.
+        // This is the line the user reported as confusing (it showed
+        // `dotnet publish` for a net48 WebForms site, which is what failed).
+        var tool = _isWebApp ? "msbuild" : "dotnet";
         string commandLine;
         try
         {
-            commandLine = $"dotnet {DotNetPublisher.BuildArguments(BuildPublishSettings(project, outputDir))}";
+            var settings = BuildPublishSettings(project, outputDir);
+            commandLine = _isWebApp
+                ? $"{tool} {MsBuildPublisher.BuildArguments(settings)}"
+                : $"{tool} {DotNetPublisher.BuildArguments(settings)}";
         }
         catch (ArgumentException ex)
         {

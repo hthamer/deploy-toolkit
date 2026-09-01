@@ -4,11 +4,23 @@ using System.Text;
 namespace DeployToolkit.Core.Publishing;
 
 /// <summary>
-/// Settings for one <c>dotnet publish</c> invocation (plan §5: "After pull,
-/// the Packager runs dotnet publish itself... using the framework /
+/// Settings for one publish invocation (plan §5: "After pull, the
+/// Packager runs dotnet publish itself... using the framework /
 /// self-contained settings stored on the component"). Shell-outs are fine
 /// on YOUR build machine — the "no scripts" constraint applies to target
 /// servers only (plan §1).
+///
+/// The same record carries the structured publish options Visual Studio's
+/// publish wizard exposes, so the UI can present them as proper checkboxes
+/// instead of forcing the user to type raw <c>-p:PublishSingleFile=true</c>
+/// into a free-text box. Each publisher only reads the options that make
+/// sense for its toolchain:
+///  • <see cref="DotNetPublisher"/> (modern .NET) reads
+///    <see cref="ProduceSingleFile"/> + <see cref="ReadyToRun"/>;
+///  • <see cref="MsBuildPublisher"/> (.NET Framework Web Applications)
+///    reads <see cref="Precompile"/> + <see cref="PrecompileOptions"/> +
+///    <see cref="ExcludeAppData"/>.
+/// Options irrelevant to the selected toolchain are left null and ignored.
 /// </summary>
 public sealed record PublishSettings(
     string ProjectPath,
@@ -16,7 +28,19 @@ public sealed record PublishSettings(
     bool SelfContained,
     string Configuration = "Release",
     string? OutputDirectory = null,
-    string? AdditionalArguments = null)
+    string? AdditionalArguments = null,
+    // ---- Modern .NET (dotnet publish) structured options ----
+    // VS publish wizard: "Produce Single file" → -p:PublishSingleFile=true
+    bool? ProduceSingleFile = null,
+    // VS publish wizard: "Enable ReadyToRun compilation" → -p:PublishReadyToRun=true
+    bool? ReadyToRun = null,
+    // ---- .NET Framework Web Applications (msbuild + WPP) options ----
+    // VS publish wizard: "Precompile during publishing" (+ Configure…).
+    bool? Precompile = null,
+    // The precompile sub-options from the VS "Precompile Options" dialog.
+    WebPrecompileOptions? PrecompileOptions = null,
+    // VS publish wizard: "Exclude files from the App_Data folder".
+    bool? ExcludeAppData = null)
 {
     /// <summary>Validates the shape of the settings (existence of the
     /// project path is checked at publish time so the error message can
@@ -65,6 +89,14 @@ public static class DotNetPublisher
 
         if (!string.IsNullOrWhiteSpace(settings.OutputDirectory))
             sb.Append(" -o ").Append(Quote(settings.OutputDirectory!));
+
+        // Structured publish options (Visual Studio publish wizard parity).
+        // Appended before the caller's verbatim AdditionalArguments so a
+        // power user can still override/extend them from the free-text box.
+        if (settings.ProduceSingleFile == true)
+            sb.Append(" -p:PublishSingleFile=true");
+        if (settings.ReadyToRun == true)
+            sb.Append(" -p:PublishReadyToRun=true");
 
         if (!string.IsNullOrWhiteSpace(settings.AdditionalArguments))
             sb.Append(' ').Append(settings.AdditionalArguments);

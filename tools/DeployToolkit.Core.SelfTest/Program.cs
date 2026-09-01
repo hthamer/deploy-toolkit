@@ -624,6 +624,146 @@ try
     }
 
     // ---------------------------------------------------------------
+    Console.WriteLine("== DotNetPublisher structured publish options (Single file / ReadyToRun) ==");
+    var singleFileArgs = DotNetPublisher.BuildArguments(pubSettings1 with { ProduceSingleFile = true, ReadyToRun = true });
+    Check("ProduceSingleFile maps to -p:PublishSingleFile=true", singleFileArgs.Contains("-p:PublishSingleFile=true"));
+    Check("ReadyToRun maps to -p:PublishReadyToRun=true", singleFileArgs.Contains("-p:PublishReadyToRun=true"));
+    Check("structured options precede AdditionalArguments (so caller can still override)",
+        !singleFileArgs.Contains("-p:PublishSingleFile=true after") && singleFileArgs.Contains("-p:PublishSingleFile=true"));
+    var noOptsArgs = DotNetPublisher.BuildArguments(pubSettings1);
+    Check("omitted structured options add nothing", !noOptsArgs.Contains("PublishSingleFile") && !noOptsArgs.Contains("PublishReadyToRun"));
+    var optsWithExtraArgs = DotNetPublisher.BuildArguments(pubSettings1 with { ProduceSingleFile = true, AdditionalArguments = "--nologo" });
+    Check("structured options are appended before the caller's extra args",
+        optsWithExtraArgs.Contains("-p:PublishSingleFile=true --nologo") || optsWithExtraArgs.Contains("-p:PublishSingleFile=true") && optsWithExtraArgs.EndsWith("--nologo"));
+
+    // ---------------------------------------------------------------
+    Console.WriteLine("== WebProjectDetector (.NET Framework Web Application detection) ==");
+    var detRoot = Path.Combine(workRoot, "webdetect");
+    Directory.CreateDirectory(detRoot);
+
+    // Classic Web Application: non-SDK csproj that imports Microsoft.WebApplication.targets
+    // (the exact import that fails with MSB4019 under the .NET SDK's MSBuild).
+    var classicWeb = Path.Combine(detRoot, "ClassicWeb.csproj");
+    File.WriteAllText(classicWeb, """
+        <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+          <PropertyGroup>
+            <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+            <ProjectTypeGuids>{349C5B8E-1FC2-4E65-AD91-9E64525F2DD3};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
+          </PropertyGroup>
+          <Import Project="$(VSToolsPath)\WebApplications\Microsoft.WebApplication.targets" Condition="false" />
+        </Project>
+        """);
+    Check("classic Web Application (imports Microsoft.WebApplication.targets) is detected",
+        WebProjectDetector.IsNetFrameworkWebApp(classicWeb));
+
+    // Classic Web Application detected via ProjectTypeGuids only (no Import).
+    var classicWebGuidOnly = Path.Combine(detRoot, "ClassicWebGuid.csproj");
+    File.WriteAllText(classicWebGuidOnly, """
+        <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+          <PropertyGroup>
+            <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+            <ProjectTypeGuids>{349C5B8E-1FC2-4E65-AD91-9E64525F2DD3};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
+          </PropertyGroup>
+        </Project>
+        """);
+    Check("classic Web Application detected via ProjectTypeGuids GUID",
+        WebProjectDetector.IsNetFrameworkWebApp(classicWebGuidOnly));
+
+    // SDK-style web project (Microsoft.NET.Sdk.Web) — publishes fine with dotnet publish.
+    var sdkWeb = Path.Combine(detRoot, "SdkWeb.csproj");
+    File.WriteAllText(sdkWeb, """
+        <Project Sdk="Microsoft.NET.Sdk.Web">
+          <PropertyGroup>
+            <TargetFramework>net8.0</TargetFramework>
+          </PropertyGroup>
+        </Project>
+        """);
+    Check("SDK-style web project is NOT a classic Web Application",
+        !WebProjectDetector.IsNetFrameworkWebApp(sdkWeb));
+
+    // SDK-style class library targeting net48 — also NOT a classic Web Application.
+    var sdkLib48 = Path.Combine(detRoot, "SdkLib48.csproj");
+    File.WriteAllText(sdkLib48, """
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup>
+            <TargetFramework>net48</TargetFramework>
+          </PropertyGroup>
+        </Project>
+        """);
+    Check("SDK-style net48 library is NOT a classic Web Application",
+        !WebProjectDetector.IsNetFrameworkWebApp(sdkLib48));
+
+    // Classic non-web class library (no WebApplication import, no web GUID).
+    var classicLib = Path.Combine(detRoot, "ClassicLib.csproj");
+    File.WriteAllText(classicLib, """
+        <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+          <PropertyGroup>
+            <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+          </PropertyGroup>
+        </Project>
+        """);
+    Check("classic non-web library is NOT a Web Application",
+        !WebProjectDetector.IsNetFrameworkWebApp(classicLib));
+
+    Check("missing csproj is not a Web Application (no throw)",
+        !WebProjectDetector.IsNetFrameworkWebApp(Path.Combine(detRoot, "missing.csproj")));
+    Check("null/empty path is not a Web Application",
+        !WebProjectDetector.IsNetFrameworkWebApp(null) && !WebProjectDetector.IsNetFrameworkWebApp(""));
+
+    // ---------------------------------------------------------------
+    Console.WriteLine("== MsBuildPublisher (.NET Framework Web Application file-system publish) ==");
+    var webSettings = new PublishSettings(
+        ProjectPath: @"C:\repos\Vision Invest\Vision_EN.csproj",
+        TargetFramework: "net48",
+        SelfContained: false,
+        OutputDirectory: @"C:\out\Vision Site");
+    var webArgs = MsBuildPublisher.BuildArguments(webSettings);
+    Check("msbuild quotes spaces in project path", webArgs.Contains("\"C:\\repos\\Vision Invest\\Vision_EN.csproj\""));
+    Check("msbuild runs /restore first", webArgs.StartsWith("\"C:\\repos\\Vision Invest\\Vision_EN.csproj\" /restore"));
+    Check("msbuild sets Configuration", webArgs.Contains("/p:Configuration=Release"));
+    Check("msbuild triggers Web Publishing Pipeline (DeployOnBuild)", webArgs.Contains("/p:DeployOnBuild=true"));
+    Check("msbuild uses FileSystem publish method", webArgs.Contains("/p:WebPublishMethod=FileSystem"));
+    Check("msbuild sets PublishUrl (quoted when it has spaces)", webArgs.Contains("/p:PublishUrl=\"C:\\out\\Vision Site\""));
+    Check("msbuild defaults DeleteExistingFiles=False", webArgs.Contains("/p:DeleteExistingFiles=False"));
+    Check("msbuild does NOT pass -r (RID) for web apps", !webArgs.Contains(" -r ") && !webArgs.Contains("/r:"));
+    Check("msbuild does NOT pass --self-contained", !webArgs.Contains("--self-contained"));
+
+    // Precompile on, default sub-options (updatable=true, fixednames=false, debug=false).
+    var precompileArgs = MsBuildPublisher.BuildArguments(webSettings with
+    {
+        Precompile = true,
+        PrecompileOptions = WebPrecompileOptions.Default,
+    });
+    Check("precompile sets PrecompileBeforePublish=true", precompileArgs.Contains("/p:PrecompileBeforePublish=true"));
+    Check("precompile default Updatable=true", precompileArgs.Contains("/p:EnableUpdateable=true"));
+    Check("precompile default UseFixedNames=false", precompileArgs.Contains("/p:UseFixedNames=false"));
+    Check("precompile default DebugSymbols=false", precompileArgs.Contains("/p:DebugSymbols=false"));
+
+    // Precompile with custom sub-options.
+    var precompileCustom = MsBuildPublisher.BuildArguments(webSettings with
+    {
+        Precompile = true,
+        PrecompileOptions = new WebPrecompileOptions(Updatable: false, UseFixedNames: true, EmitDebugInfo: true),
+    });
+    Check("precompile custom Updatable=false", precompileCustom.Contains("/p:EnableUpdateable=false"));
+    Check("precompile custom UseFixedNames=true", precompileCustom.Contains("/p:UseFixedNames=true"));
+    Check("precompile custom EmitDebugInfo=true", precompileCustom.Contains("/p:DebugSymbols=true"));
+
+    // Exclude App_Data.
+    var excludeArgs = MsBuildPublisher.BuildArguments(webSettings with { ExcludeAppData = true });
+    Check("ExcludeAppData maps to /p:ExcludeApp_Data=true", excludeArgs.Contains("/p:ExcludeApp_Data=true"));
+
+    // Extra arguments pass through verbatim.
+    var extraArgs = MsBuildPublisher.BuildArguments(webSettings with { AdditionalArguments = "/p:Foo=bar /nologo" });
+    Check("caller extra args pass through verbatim", extraArgs.EndsWith("/p:Foo=bar /nologo"));
+
+    // Precompile=false (explicit) must NOT emit the precompile properties.
+    var noPrecompile = MsBuildPublisher.BuildArguments(webSettings with { Precompile = false });
+    Check("Precompile=false emits no precompile properties", !noPrecompile.Contains("PrecompileBeforePublish"));
+    Check("Precompile=false emits no EnableUpdateable", !noPrecompile.Contains("EnableUpdateable"));
+
+
+    // ---------------------------------------------------------------
     Console.WriteLine("== Azure App Service executor (plan §12, fake-handler tested) ==");
     var azHandler = new FakeHttpHandler();
     var kuduCreds = new KuduCredentials("clienta-cms", "$clienta-cms", "publish-password");
