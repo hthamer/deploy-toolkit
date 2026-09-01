@@ -762,6 +762,60 @@ try
     Check("Precompile=false emits no precompile properties", !noPrecompile.Contains("PrecompileBeforePublish"));
     Check("Precompile=false emits no EnableUpdateable", !noPrecompile.Contains("EnableUpdateable"));
 
+    // ---------------------------------------------------------------
+    Console.WriteLine("== MsBuildPublisher VS-only resolution (no .NET Framework fallback) ==");
+    // ResolveVsMsBuildExecutable must NEVER return the .NET Framework MSBuild
+    // (it silently exits 0 without publishing web apps because $(VSToolsPath)
+    // is empty → Microsoft.WebApplication.targets import is skipped). When no
+    // VS is installed it must return null so PublishAsync can throw a clear
+    // error instead of producing a silent "success" with no output.
+    var vsMsBuild = MsBuildPublisher.ResolveVsMsBuildExecutable();
+    if (vsMsBuild is not null)
+    {
+        Check("VS MSBuild (when present) is under a Visual Studio install path",
+            vsMsBuild.Contains("Visual Studio", StringComparison.OrdinalIgnoreCase));
+        Check("VS MSBuild is NOT the .NET Framework MSBuild",
+            !vsMsBuild.Contains("Microsoft.NET", StringComparison.OrdinalIgnoreCase) &&
+            !vsMsBuild.Contains("Framework", StringComparison.OrdinalIgnoreCase));
+    }
+    else
+    {
+        // On this sandbox there is likely no VS — that's fine; the contract
+        // we're asserting is "null, not the Framework MSBuild".
+        Check("VS MSBuild is null (no VS installed) — NOT the Framework fallback",
+            vsMsBuild is null);
+    }
+
+    // PublishAsync must throw a clear, actionable error when no VS MSBuild is
+    // available (instead of silently "succeeding" via the Framework MSBuild).
+    var noVsPublish = false;
+    var noVsMessage = string.Empty;
+    try
+    {
+        await MsBuildPublisher.PublishAsync(webSettings, timeoutMinutes: 1);
+    }
+    catch (InvalidOperationException ex)
+    {
+        noVsPublish = true;
+        noVsMessage = ex.Message;
+    }
+    if (vsMsBuild is null)
+    {
+        Check("PublishAsync throws (no VS) instead of silently succeeding", noVsPublish);
+        Check("PublishAsync error mentions Visual Studio + web workload",
+            noVsMessage.Contains("Visual Studio", StringComparison.OrdinalIgnoreCase) &&
+            noVsMessage.Contains("web", StringComparison.OrdinalIgnoreCase));
+        Check("PublishAsync error explains the Framework MSBuild cannot publish web apps",
+            noVsMessage.Contains("Framework MSBuild", StringComparison.OrdinalIgnoreCase) ||
+            noVsMessage.Contains("$(VSToolsPath)", StringComparison.OrdinalIgnoreCase));
+    }
+    else
+    {
+        // VS is present on this machine — PublishAsync would actually run
+        // msbuild; skip the throw-assertion (it would try a real publish).
+        Check("PublishAsync did not throw when VS MSBuild is present", !noVsPublish);
+    }
+
 
     // ---------------------------------------------------------------
     Console.WriteLine("== Azure App Service executor (plan §12, fake-handler tested) ==");

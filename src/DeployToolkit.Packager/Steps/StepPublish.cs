@@ -776,12 +776,46 @@ internal sealed class StepPublish : WizardStep
 
             if (result.Success)
             {
-                Draft.PublishOutputRoot = outputDir;
-                Draft.PublishSuccess = true;
-                _statusLabel.ForeColor = Color.ForestGreen;
+                // The process exited 0, but that is NOT proof the publish
+                // produced output. For .NET Framework Web Applications the
+                // Web Publishing Pipeline must actually run (it requires the
+                // Visual Studio MSBuild — the .NET Framework MSBuild has an
+                // empty $(VSToolsPath), so the Microsoft.WebApplication.targets
+                // import is skipped via its Condition and DeployOnBuild=true
+                // silently does nothing, exiting 0 with no files written).
+                // Verify the output folder exists and is non-empty HERE
+                // instead of crashing in CountFiles with a raw
+                // DirectoryNotFoundException on the missing folder.
+                if (!Directory.Exists(outputDir))
+                {
+                    _statusLabel.ForeColor = Color.Firebrick;
+                    _statusLabel.Text = _isWebApp
+                        ? "Publish reported success but produced no output folder. " +
+                          "The Web Publishing Pipeline did not run — install Visual Studio " +
+                          "(2017+) with the 'ASP.NET and web development tools' workload. " +
+                          "The .NET Framework MSBuild cannot publish web apps. See the log for details."
+                        : $"Publish reported success but the output folder is missing: {outputDir}";
+                    return;
+                }
+
                 var fileCount = await Task.Run(() => CountFiles(outputDir), _publishCts.Token);
                 if (IsDisposed || Wizard.IsDisposed)
                     return;
+
+                if (fileCount == 0)
+                {
+                    _statusLabel.ForeColor = Color.Firebrick;
+                    _statusLabel.Text = _isWebApp
+                        ? $"Publish reported success but the output folder is empty: {outputDir}. " +
+                          "The Web Publishing Pipeline likely did not run — check the log for skipped " +
+                          "targets and confirm Visual Studio with the web workload is installed."
+                        : $"Publish reported success but the output folder is empty: {outputDir}";
+                    return;
+                }
+
+                Draft.PublishOutputRoot = outputDir;
+                Draft.PublishSuccess = true;
+                _statusLabel.ForeColor = Color.ForestGreen;
                 _statusLabel.Text = $"Publish OK — {fileCount} files in {outputDir}";
             }
             else
@@ -974,8 +1008,28 @@ internal sealed class StepPublish : WizardStep
         return string.IsNullOrWhiteSpace(safe) ? "component" : safe.Trim();
     }
 
-    private static int CountFiles(string folder) =>
-        Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).Count();
+    /// <summary>Counts every file under <paramref name="folder"/> recursively.
+    /// Returns 0 when the folder does not exist (defense-in-depth — the
+    /// success path already checks <c>Directory.Exists</c> before counting,
+    /// but this guarantees a missing folder can never crash the UI thread
+    /// with a raw <see cref="DirectoryNotFoundException"/>).</summary>
+    private static int CountFiles(string folder)
+    {
+        if (!Directory.Exists(folder))
+            return 0;
+        try
+        {
+            return Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).Count();
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return 0; // deleted between the Exists check and the enumeration
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return 0; // unreadable subtree — count what we can as zero
+        }
+    }
 
     /// <summary>Recursively finds .csproj files under the folder, skipping
     /// build/dependency directories (bin, obj, .git).</summary>

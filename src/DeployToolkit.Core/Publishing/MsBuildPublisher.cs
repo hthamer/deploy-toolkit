@@ -85,15 +85,27 @@ public static class MsBuildPublisher
     }
 
     /// <summary>
-    /// Locates the full Visual Studio MSBuild: <c>vswhere</c> first (the
-    /// canonical probe for any VS 2017+ install, including Build Tools and
-    /// Preview), then the well-known VS install paths, then the .NET
-    /// Framework MSBuild (last resort — it can host the build but cannot
-    /// resolve the Web Applications targets without VS installed, so a
-    /// publish will likely still fail with MSB4019; we still return it so
-    /// the error message points at the real fix: install VS).
+    /// Locates a Visual Studio MSBuild (the only MSBuild that can publish
+    /// .NET Framework Web Application projects, because the Web Publishing
+    /// Pipeline + Web Applications targets ship with VS, not the .NET SDK
+    /// and not the .NET Framework). Order:
+    ///  <list type="number">
+    ///   <item><c>vswhere.exe</c> (canonical probe for any VS 2017+ install,
+    ///    including Build Tools and Preview).</item>
+    ///   <item>the well-known VS install paths (when vswhere is absent).</item>
+    ///  </list>
+    /// Returns <c>null</c> when no Visual Studio is installed — DO NOT fall
+    /// back to the .NET Framework MSBuild here: it can host a build but
+    /// <b>cannot</b> run the Web Publishing Pipeline (<c>$(VSToolsPath)</c>
+    /// is empty, so the <c>Microsoft.WebApplication.targets</c> import is
+    /// skipped via its <c>Condition="'$(VSToolsPath)' != ''"</c>), which
+    /// means <c>DeployOnBuild=true</c> silently does nothing and msbuild
+    /// exits 0 without producing any publish output — the tool would then
+    /// crash later in <c>CountFiles</c> with <c>DirectoryNotFoundException</c>
+    /// on the missing output folder. Failing here with a clear message is
+    /// correct; a silent "success" is not.
     /// </summary>
-    public static string? ResolveMsBuildExecutable()
+    public static string? ResolveVsMsBuildExecutable()
     {
         // 1. vswhere → MSBuild\Current\Bin\MSBuild.exe (VS 2019 / 2022+).
         var vsWhere = Path.Combine(
@@ -144,13 +156,32 @@ public static class MsBuildPublisher
                 var candidate = Path.Combine(root, "MSBuild", "Current", "Bin", "MSBuild.exe");
                 if (File.Exists(candidate)) return candidate;
             }
+        }
 
-            // 3. Last resort — the .NET Framework MSBuild. It can host a build
-            // but cannot resolve the Visual Studio Web Applications targets on
-            // its own (those ship with VS, not the Framework), so a Web
-            // Application publish will usually still fail with MSB4019. We
-            // return it anyway so the surfaced error points at the missing VS
-            // install instead of an opaque "could not locate MSBuild".
+        return null; // no Visual Studio found — caller must surface a clear error
+    }
+
+    /// <summary>
+    /// Locates any MSBuild on the machine: the Visual Studio MSBuild first
+    /// (see <see cref="ResolveVsMsBuildExecutable"/>), then the .NET
+    /// Framework MSBuild as a last resort. <b>Only use this for
+    /// display/summary purposes</b> — for actually publishing .NET Framework
+    /// Web Applications, use <see cref="ResolveVsMsBuildExecutable"/> via
+    /// <see cref="PublishAsync"/>. The Framework MSBuild fallback is here so
+    /// a UI preview can still show <c>msbuild …</c> on machines without VS,
+    /// but publishing from it would silently produce no output (see the
+    /// warning on <see cref="ResolveVsMsBuildExecutable"/>).
+    /// </summary>
+    public static string? ResolveMsBuildExecutable()
+    {
+        var vsMsBuild = ResolveVsMsBuildExecutable();
+        if (vsMsBuild is not null)
+            return vsMsBuild;
+
+        // Last resort — the .NET Framework MSBuild. Display/summary only;
+        // never use this to actually publish a web app (see above).
+        if (OperatingSystem.IsWindows())
+        {
             var fwMsBuild = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.Windows),
                 "Microsoft.NET", "Framework64", "v4.0.30319", "MSBuild.exe");
@@ -173,12 +204,15 @@ public static class MsBuildPublisher
         CancellationToken cancellationToken = default)
     {
         settings.Validate();
-        var msbuild = ResolveMsBuildExecutable()
+        var msbuild = ResolveVsMsBuildExecutable()
             ?? throw new InvalidOperationException(
-                "Could not locate MSBuild. Install Visual Studio (with the 'MSBuild' and " +
-                "'ASP.NET and web development tools' workloads) — the .NET SDK's MSBuild cannot " +
-                "publish .NET Framework Web Application projects because " +
-                "Microsoft.WebApplication.targets is a Visual Studio-only target (error MSB4019).");
+                "Could not locate the Visual Studio MSBuild. .NET Framework Web Application " +
+                "projects require the Web Publishing Pipeline + Microsoft.WebApplication.targets, " +
+                "which ship with Visual Studio (install the 'ASP.NET and web development tools' " +
+                "workload). The .NET Framework MSBuild cannot publish web apps — it exits " +
+                "successfully without producing any output because $(VSToolsPath) is empty and " +
+                "the Web Applications targets import is skipped. Install Visual Studio 2017+ " +
+                "(or the standalone Build Tools with the web workload) and retry.");
 
         var psi = new ProcessStartInfo
         {
