@@ -165,6 +165,39 @@ public sealed class LocalFileRegistryStore : IRegistryStore
         finally { _lock.Release(); }
     }
 
+    public async Task DeleteComponentAsync(string componentId)
+    {
+        if (string.IsNullOrWhiteSpace(componentId))
+            throw new ArgumentException("ComponentId is required.", nameof(componentId));
+
+        await _lock.WaitAsync();
+        try
+        {
+            var components = await LoadAsync<List<DeploymentComponent>>(ComponentsFile) ?? new();
+            var component = components.FirstOrDefault(c => c.ComponentId == componentId)
+                ?? throw new InvalidOperationException($"Component {componentId} not found.");
+
+            // Audit-trail rule: never cascade-delete a parent with children.
+            // The user must delete the packages first (DeletePackageAsync).
+            var packages = await LoadAsync<List<PackageRecord>>(PackagesFile) ?? new();
+            var packageCount = packages.Count(p => p.ComponentId == componentId);
+            if (packageCount > 0)
+                throw new InvalidOperationException(
+                    $"Component '{component.Name}' still has {packageCount} package(s). Delete its packages first — registry rows are an audit trail and are never cascade-deleted.");
+
+            components.Remove(component);
+            await SaveAsync(ComponentsFile, components);
+
+            // NOTE: the folder→component mapping (JsonFileProjectMappingStore)
+            // is intentionally NOT touched here — it lives in a separate store
+            // the registry does not own. A dangling mapping is harmless:
+            // ResolveComponentForFolderAsync throws a clear "component no
+            // longer exists" error and the user re-picks via the picker.
+        }
+        finally { _lock.Release(); }
+    }
+
+
     // ---------------------------------------------------------------
     // Packages
 

@@ -58,7 +58,7 @@ internal sealed class StepFolder : WizardStep
         {
             Text = "No folder selected yet.",
             AutoSize = false,
-            Height = 56,
+            Height = 74, // Branch+HEAD / Sync outcome / Remote (up to 3 lines)
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };
@@ -262,11 +262,19 @@ internal sealed class StepFolder : WizardStep
 
     private void UpdateSummary()
     {
+        // The folder textbox shows the selected path so the user can see
+        // (and copy) what was picked — mirrors the Visual Studio "Folder"
+        // publish profile UX where the path is visible next to Browse.
+        _folderBox.Text = Draft.FolderPath ?? string.Empty;
+
         if (Draft.GitSync is { } sync)
         {
             _gitSummary.ForeColor = Color.Black;
             _gitSummary.Text = $"Branch: {sync.BranchName}    HEAD: {ShortSha(sync.HeadSha)}\n" +
-                               $"Sync outcome: {DescribeOutcome(sync.Outcome, sync.Pulled)}";
+                               $"Sync outcome: {DescribeOutcome(sync.Outcome, sync.Pulled)}" +
+                               (string.IsNullOrEmpty(sync.RemoteUrl)
+                                   ? string.Empty
+                                   : $"\nRemote: {sync.RemoteUrl}");
         }
         else if (Draft.FolderPath is not null)
         {

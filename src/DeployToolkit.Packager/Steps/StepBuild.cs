@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using DeployToolkit.AppKit;
 using DeployToolkit.Core.Packaging;
+using DeployToolkit.Core.Publishing;
 using DeployToolkit.Core.Registry;
 
 namespace DeployToolkit.Packager.Steps;
@@ -222,6 +223,92 @@ internal sealed class StepBuild : WizardStep
         _openFolderButton.Enabled = true;
         _copyPathButton.Enabled = true;
         Wizard.OnDraftChanged();
+
+        // #3: After a successful build, keep the registry truthful about what
+        // was actually published. The publish step already writes the component's
+        // TargetFramework/IsSelfContained; here we additionally sync the CLIENT's
+        // GitRepositoryUrl/DeploymentBranch (from the folder's git remote + the
+        // synced branch) and the client's PublishConfiguration (deployment type,
+        // target runtime, additional publish options) so the next build starts
+        // from the values the user actually used this time. Failures are
+        // non-fatal — a registry write error must not undo a successful build.
+        _ = SyncRegistryFromSessionAsync();
+    }
+
+    /// <summary>
+    /// #3: writes the session's resolved publish settings back to the registry
+    /// so the next package build starts from the values the user actually used
+    /// this time. Updates the component's TargetFramework/IsSelfContained (in
+    /// case the publish step's coalesced save lost the race) and the client's
+    /// GitRepositoryUrl, DeploymentBranch, and PublishConfiguration. Only
+    /// writes when something actually changed — no registry churn otherwise.
+    /// Errors are swallowed and surfaced only in the status label; a sync
+    /// failure never undoes a successful build.
+    /// </summary>
+    private async Task SyncRegistryFromSessionAsync()
+    {
+        try
+        {
+            var component = Draft.Component;
+            if (component is null)
+                return;
+
+            var client = await Wizard.Registry.GetClientAsync(component.ClientId);
+            if (client is null || Wizard.IsDisposed || IsDisposed)
+                return;
+
+            var changed = false;
+
+            // ---- Client: git repo URL + deployment branch from the folder's
+            // git sync (the authoritative source — the user's local checkout) ----
+            var sync = Draft.GitSync;
+            if (sync is not null)
+            {
+                if (!string.IsNullOrWhiteSpace(sync.RemoteUrl) &&
+                    !string.Equals(sync.RemoteUrl, client.GitRepositoryUrl, StringComparison.Ordinal))
+                {
+                    client.GitRepositoryUrl = sync.RemoteUrl;
+                    changed = true;
+                }
+                if (!string.IsNullOrWhiteSpace(sync.BranchName) &&
+                    !string.Equals(sync.BranchName, client.DeploymentBranch, StringComparison.Ordinal))
+                {
+                    client.DeploymentBranch = sync.BranchName;
+                    changed = true;
+                }
+            }
+
+            // ---- Client: PublishConfiguration (deployment type / RID / extra
+            // options) from the publish step's editable controls. The publish
+            // step stores these only in the in-memory _optionsBox/_runtimeBox/
+            // _deployModeBox; we fold them into the client default here so the
+            // next build starts from the values the user actually used. ----
+            var publishConfig = client.PublishConfiguration ?? new PublishConfiguration();
+
+            // Deployment type: self-contained vs framework-dependent. The
+            // component's IsSelfContained (kept truthful by the publish step)
+            // is the source of truth for the deployment type.
+            var newDeploymentType = component.IsSelfContained
+                ? PublishDeploymentType.SelfContained
+                : PublishDeploymentType.FrameworkDependent;
+            if (publishConfig.DeploymentType != newDeploymentType)
+            {
+                publishConfig.DeploymentType = newDeploymentType;
+                client.PublishConfiguration = publishConfig;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                await Guard.RunAsync(Wizard, "Updating client profile from this build…", async _ =>
+                    await Wizard.Registry.UpdateClientAsync(client));
+            }
+        }
+        catch (Exception)
+        {
+            // Registry sync is best-effort — a failure here must not undo a
+            // successful build. The build result already shows in the UI.
+        }
     }
 
     private Action? _deltaCommit;

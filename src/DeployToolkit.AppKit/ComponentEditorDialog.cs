@@ -13,6 +13,7 @@ namespace DeployToolkit.AppKit;
 public sealed class ComponentEditorDialog : Form
 {
     private readonly string _clientId;
+    private readonly string? _existingComponentId;
 
     private readonly TextBox _nameBox;
     private readonly ComboBox _targetTypeBox;
@@ -40,11 +41,29 @@ public sealed class ComponentEditorDialog : Form
     /// <summary>The built component when the dialog is closed with OK; otherwise null.</summary>
     public DeploymentComponent? ResultComponent { get; private set; }
 
-    public ComponentEditorDialog(string clientId)
+    /// <summary>
+    /// Add-mode constructor: builds a brand-new component (a fresh ComponentId
+    /// is generated on OK). The TargetType picker is fully editable.
+    /// </summary>
+    public ComponentEditorDialog(string clientId) : this(clientId, existing: null) { }
+
+    /// <summary>
+    /// Edit-mode constructor: pre-fills every field from <paramref name="existing"/>
+    /// and, on OK, returns a rebuilt <see cref="DeploymentComponent"/> that
+    /// preserves the existing <c>ComponentId</c> / <c>ClientId</c>. The
+    /// TargetType picker is LOCKED (the target kind cannot change after a
+    /// component exists — its IIS site / Azure app / Plesk site bindings
+    /// depend on it) and shown read-only.
+    /// </summary>
+    public ComponentEditorDialog(string clientId, DeploymentComponent existing)
+        : this(clientId, (DeploymentComponent?)existing) { }
+
+    private ComponentEditorDialog(string clientId, DeploymentComponent? existing)
     {
         _clientId = clientId;
+        _existingComponentId = existing?.ComponentId;
 
-        Text = "Add component";
+        Text = existing is null ? "Add component" : $"Edit component — {existing.Name}";
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -141,6 +160,29 @@ public sealed class ComponentEditorDialog : Form
         CancelButton = cancelButton;
         AcceptButton = okButton;
 
+        // Edit mode: pre-fill the fields from the existing component and lock
+        // the TargetType picker (the target kind can't change after a component
+        // exists — its IIS/Azure/Plesk bindings depend on it). Add mode leaves
+        // everything empty for the user to fill in.
+        if (existing is { } ex)
+        {
+            _nameBox.Text = ex.Name;
+            _targetFrameworkBox.Text = ex.TargetFramework;
+            _selfContainedBox.Checked = ex.IsSelfContained;
+            _iisSiteNameBox.Text = ex.IisSiteName ?? string.Empty;
+            _iisAppPathBox.Text = ex.IisAppPath ?? string.Empty;
+            _azureAppServiceNameBox.Text = ex.AzureAppServiceName ?? string.Empty;
+            _azureResourceGroupBox.Text = ex.AzureResourceGroup ?? string.Empty;
+            _pleskHostBox.Text = ex.PleskHost ?? string.Empty;
+            _pleskSiteIdBox.Text = ex.PleskSiteId ?? string.Empty;
+            _healthCheckUrlBox.Text = ex.HealthCheckUrl ?? string.Empty;
+            _dbConnectionRefBox.Text = ex.DbConnectionRef ?? string.Empty;
+
+            // Select + lock the existing TargetType.
+            _targetTypeBox.SelectedItem = ex.TargetType;
+            _targetTypeBox.Enabled = false;
+        }
+
         UpdateTargetSections();
     }
 
@@ -198,7 +240,8 @@ public sealed class ComponentEditorDialog : Form
         var type = SelectedTargetType;
         ResultComponent = new DeploymentComponent
         {
-            ComponentId = Guid.NewGuid().ToString("N"),
+            // Edit mode preserves the existing ComponentId; add mode mints a fresh one.
+            ComponentId = _existingComponentId ?? Guid.NewGuid().ToString("N"),
             ClientId = _clientId,
             Name = name,
             TargetType = type,

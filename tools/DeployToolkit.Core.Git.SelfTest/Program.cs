@@ -118,6 +118,9 @@ try
     Check($"branch name reported ('{branch}')", r1.BranchName == branch);
     Check("Pulled is false", !r1.Pulled);
     Check("tree is clean after clone", !r1.IsDirty);
+    // RemoteUrl is surfaced so the UI can display it in the Git section and a
+    // successful build can write it back to the client's GitRepositoryUrl.
+    Check("RemoteUrl is the origin URL", !string.IsNullOrEmpty(r1.RemoteUrl) && r1.RemoteUrl!.Contains(bare));
 
     // ---------------------------------------------------------------- t2
     Console.WriteLine("== t2: FetchOnly sees new work but never moves HEAD ==");

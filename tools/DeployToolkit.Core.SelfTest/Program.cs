@@ -816,6 +816,76 @@ try
         Check("PublishAsync did not throw when VS MSBuild is present", !noVsPublish);
     }
 
+    // ---------------------------------------------------------------
+    Console.WriteLine("== WebProjectDetector.IsWebProject (publishable web app filter) ==");
+    var filterRoot = Path.Combine(workRoot, "webfilter");
+    Directory.CreateDirectory(filterRoot);
+
+    // Classic Web Application → web project (publishable).
+    Check("classic Web Application is a web project",
+        WebProjectDetector.IsWebProject(classicWeb));
+
+    // SDK-style web project (Microsoft.NET.Sdk.Web) → web project.
+    Check("SDK-style Microsoft.NET.Sdk.Web is a web project",
+        WebProjectDetector.IsWebProject(sdkWeb));
+
+    // SDK-style plain class library (Microsoft.NET.Sdk) → NOT a web project.
+    var sdkLibPlain = Path.Combine(filterRoot, "SdkLibPlain.csproj");
+    File.WriteAllText(sdkLibPlain, """
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup>
+            <TargetFramework>net8.0</TargetFramework>
+          </PropertyGroup>
+        </Project>
+        """);
+    Check("SDK-style plain class library is NOT a web project",
+        !WebProjectDetector.IsWebProject(sdkLibPlain));
+
+    // SDK-style net48 library → NOT a web project.
+    Check("SDK-style net48 library is NOT a web project",
+        !WebProjectDetector.IsWebProject(sdkLib48));
+
+    // Classic non-web class library → NOT a web project.
+    Check("classic non-web library is NOT a web project",
+        !WebProjectDetector.IsWebProject(classicLib));
+
+    // SDK web project with the SDK declared in a PropertyGroup element
+    // instead of the Project attribute → web project.
+    var sdkWebAlt = Path.Combine(filterRoot, "SdkWebAlt.csproj");
+    File.WriteAllText(sdkWebAlt, """
+        <Project>
+          <PropertyGroup>
+            <Sdk>Microsoft.NET.Sdk.Web</Sdk>
+            <TargetFramework>net8.0</TargetFramework>
+          </PropertyGroup>
+        </Project>
+        """);
+    Check("SDK web project with <Sdk> in PropertyGroup is a web project",
+        WebProjectDetector.IsWebProject(sdkWebAlt));
+
+    Check("missing csproj is not a web project (no throw)",
+        !WebProjectDetector.IsWebProject(Path.Combine(filterRoot, "missing.csproj")));
+    Check("null/empty path is not a web project",
+        !WebProjectDetector.IsWebProject(null) && !WebProjectDetector.IsWebProject(""));
+
+    // ---------------------------------------------------------------
+    Console.WriteLine("== VersionIncrementer (auto-increment for new packages) ==");
+    Check("1.1.1 -> 1.1.2", VersionIncrementer.Increment("1.1.1") == "1.1.2");
+    Check("1.1.1.9 -> 1.1.2.0 (carry)", VersionIncrementer.Increment("1.1.1.9") == "1.1.2.0");
+    Check("1.1 -> 1.2", VersionIncrementer.Increment("1.1") == "1.2");
+    Check("2.0.0 -> 2.0.1", VersionIncrementer.Increment("2.0.0") == "2.0.1");
+    Check("10 -> 11", VersionIncrementer.Increment("10") == "11");
+    Check("date stamp 2026.08.31 -> 2026.09.01", VersionIncrementer.Increment("2026.08.31") == "2026.09.01");
+    Check("date stamp 2026.12.31 -> 2027.01.01 (year rollover)", VersionIncrementer.Increment("2026.12.31") == "2027.01.01");
+    Check("preserves leading zeros: 1.01 -> 1.02", VersionIncrementer.Increment("1.01") == "1.02");
+    Check("preserves pre-release suffix: 1.2.3-preview.1 -> 1.2.4-preview.1",
+        VersionIncrementer.Increment("1.2.3-preview.1") == "1.2.4-preview.1");
+    Check("non-numeric returns unchanged", VersionIncrementer.Increment("main") == "main");
+    Check("empty returns empty", VersionIncrementer.Increment("") == "");
+    Check("null returns empty", VersionIncrementer.Increment(null) == "");
+    Check("non-date 2026.8.31 (one-digit month) is treated as numeric 2026.8.32",
+        VersionIncrementer.Increment("2026.8.31") == "2026.8.32");
+
 
     // ---------------------------------------------------------------
     Console.WriteLine("== Azure App Service executor (plan §12, fake-handler tested) ==");

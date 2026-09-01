@@ -207,6 +207,15 @@ public interface IRegistryStore
     /// </summary>
     Task DeleteClientAsync(string clientId);
 
+    /// <summary>
+    /// Deletes a component. Refuses (throws <see cref="InvalidOperationException"/>)
+    /// while the component still has packages — same audit-trail rule as
+    /// <see cref="DeleteClientAsync"/>: parents with children are never
+    /// silently cascade-deleted. Use <see cref="DeletePackageAsync"/> to
+    /// remove the packages first.
+    /// </summary>
+    Task DeleteComponentAsync(string componentId);
+
     /// <summary>One package by id, any status, or null.</summary>
     Task<PackageRecord?> GetPackageAsync(string packageId);
 

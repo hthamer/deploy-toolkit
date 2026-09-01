@@ -70,6 +70,9 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
     // ----- right panel bottom: components & packages -----
     private DataGridView _componentsGrid = null!;
     private DataGridView _packagesGrid = null!;
+    private Button _addComponentButton = null!;
+    private Button _editComponentButton = null!;
+    private Button _deleteComponentButton = null!;
     private ComboBox _packagesComponentBox = null!;
     private List<DeploymentComponent> _clientComponents = new();
     private bool _suppressPackagesCombo;
@@ -485,9 +488,17 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
         var tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(12, 4) };
 
         // --- Components tab ---
-        var addComponentButton = new Button { Text = "Add component…" };
-        AppTheme.StyleButton(addComponentButton);
-        addComponentButton.Click += OnAddComponentClick;
+        _addComponentButton = new Button { Text = "Add component…" };
+        AppTheme.StyleButton(_addComponentButton);
+        _addComponentButton.Click += OnAddComponentClick;
+
+        _editComponentButton = new Button { Text = "Edit…", Enabled = false };
+        AppTheme.StyleButton(_editComponentButton);
+        _editComponentButton.Click += OnEditComponentClick;
+
+        _deleteComponentButton = new Button { Text = "Delete…", Enabled = false };
+        AppTheme.StyleButton(_deleteComponentButton);
+        _deleteComponentButton.Click += OnDeleteComponentClick;
 
         var componentsToolbar = new FlowLayoutPanel
         {
@@ -497,7 +508,9 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
             Height = 42,
             WrapContents = false,
         };
-        componentsToolbar.Controls.Add(addComponentButton);
+        componentsToolbar.Controls.Add(_addComponentButton);
+        componentsToolbar.Controls.Add(_editComponentButton);
+        componentsToolbar.Controls.Add(_deleteComponentButton);
         componentsToolbar.Controls.Add(new Label
         {
             Text = "Components belong to the selected client; packages are built per component.",
@@ -515,6 +528,16 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
         _componentsGrid.Columns.Add(Column("Target detail", 18));
         _componentsGrid.Columns.Add(Column("Health check URL", 12));
         _componentsGrid.Columns.Add(Column("DB connection ref", 10));
+        _componentsGrid.SelectionChanged += OnComponentSelectionChanged;
+        _componentsGrid.CellDoubleClick += (_, _) => OnEditComponentClick();
+        _componentsGrid.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter && SelectedComponent is not null)
+            {
+                e.Handled = true;
+                OnEditComponentClick();
+            }
+        };
 
         var componentsTab = new TabPage("Components");
         componentsTab.Controls.Add(_componentsGrid);
@@ -999,6 +1022,93 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
             catch (InvalidOperationException ex)
             {
                 AppTheme.Error(this, ex.Message, "Cannot add component");
+                return;
+            }
+            await ReloadClientChildrenAsync();
+        });
+    }
+
+    /// <summary>The currently selected component in the components grid (the
+    /// full <see cref="DeploymentComponent"/> from the in-memory list), or
+    /// null when nothing is selected.</summary>
+    private DeploymentComponent? SelectedComponent
+    {
+        get
+        {
+            if (_componentsGrid.CurrentRow is null)
+                return null;
+            var name = _componentsGrid.CurrentRow.Cells["Name"]?.Value as string;
+            return _clientComponents.FirstOrDefault(c => c.Name == name);
+        }
+    }
+
+    private void OnComponentSelectionChanged(object? sender, EventArgs e)
+    {
+        var hasSelection = SelectedComponent is not null;
+        _editComponentButton.Enabled = hasSelection;
+        _deleteComponentButton.Enabled = hasSelection;
+    }
+
+    private void OnEditComponentClick()
+    {
+        if (_selected is null)
+        {
+            AppTheme.Error(this, "Select a client first — components belong to a client.", "Edit component");
+            return;
+        }
+
+        if (SelectedComponent is not { } existing)
+            return; // no row selected — the toolbar button is disabled, but double-click can still fire on an empty grid
+
+        using var dialog = new ComponentEditorDialog(_selected.ClientId, existing);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.ResultComponent is null) return;
+        var updated = dialog.ResultComponent;
+
+        Guard.FireAndForget(this, "Saving component…", async () =>
+        {
+            try
+            {
+                await _registry.UpdateComponentAsync(updated);
+            }
+            catch (InvalidOperationException ex)
+            {
+                AppTheme.Error(this, ex.Message, "Cannot save component");
+                return;
+            }
+            await ReloadClientChildrenAsync();
+        });
+    }
+
+    private void OnEditComponentClick(object? sender, EventArgs e) => OnEditComponentClick();
+
+    private void OnDeleteComponentClick(object? sender, EventArgs e)
+    {
+        if (_selected is null)
+            return;
+
+        if (SelectedComponent is not { } existing)
+        {
+            AppTheme.Error(this, "Select a component to delete first.", "Delete component");
+            return;
+        }
+
+        if (AppTheme.Confirm(this,
+                $"Delete component '{existing.Name}'? This cannot be undone.",
+                "Delete component") != DialogResult.Yes)
+            return;
+
+        Guard.FireAndForget(this, "Deleting component…", async () =>
+        {
+            try
+            {
+                await _registry.DeleteComponentAsync(existing.ComponentId);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // The audit-trail rule: a component with packages cannot be
+                // deleted. Show the clear error so the user knows to delete
+                // the packages first.
+                AppTheme.Error(this, ex.Message, "Cannot delete component");
                 return;
             }
             await ReloadClientChildrenAsync();

@@ -74,7 +74,17 @@ public sealed record GitSyncResult(
     string? HeadShaBeforeSync,
     GitSyncOutcome Outcome,
     IReadOnlyList<string> UncommittedFiles,
-    IReadOnlyList<string> UntrackedFiles)
+    IReadOnlyList<string> UntrackedFiles,
+    /// <summary>
+    /// The URL of the remote the working folder was synced from (the
+    /// <c>origin</c> remote, or the first remote when origin is absent).
+    /// Null when the repository has no remote configured. Surfaced so the
+    /// UI can display it in the Git section and so a successful package
+    /// build can write it back to the client's GitRepositoryUrl when it
+    /// differs (plan §5: keep the registry truthful about where the
+    /// source lives).
+    /// </summary>
+    string? RemoteUrl = null)
 {
     /// <summary>True when HEAD changed during this run (i.e. the pull moved it).</summary>
     public bool Pulled => HeadShaBeforeSync is not null && HeadSha != HeadShaBeforeSync;

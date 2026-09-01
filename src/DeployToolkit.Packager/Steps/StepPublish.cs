@@ -328,6 +328,7 @@ internal sealed class StepPublish : WizardStep
         // would freeze the message pump if it ran on the UI thread (user-
         // reported freeze class), so it runs via Task.Run.
         var folderChanged = _discoveredFolder != Draft.FolderPath;
+        string? lastPackageVersion = null;
         await Guard.RunAsync(Wizard, "Preparing publish settings…", async cancellationToken =>
         {
             if (folderChanged && Draft.FolderPath is { } folder)
@@ -349,6 +350,17 @@ internal sealed class StepPublish : WizardStep
             _client = Draft.Component is null
                 ? null
                 : await Wizard.Registry.GetClientAsync(Draft.Component.ClientId);
+
+            // For #4: auto-increment the version when there's a previous
+            // package for this component. Fetch the newest package's version
+            // (any status — a Created-but-undeployed one still counts as the
+            // latest version to beat) so we can suggest last+1.
+            if (Draft.Component is { } comp && string.IsNullOrEmpty(Draft.Version))
+            {
+                var packages = await Wizard.Registry.GetPackagesForComponentAsync(comp.ComponentId);
+                if (packages.Count > 0)
+                    lastPackageVersion = packages[0].Version; // already newest-first per the store contract
+            }
         });
 
         if (IsDisposed || Wizard.IsDisposed)
@@ -366,7 +378,13 @@ internal sealed class StepPublish : WizardStep
         SeedSettingsFromDefaults();
         ApplyFrameworkDefaults();
 
-        _versionBox.Text = Draft.Version ?? string.Empty;
+        // #4: seed the version box with the auto-incremented last package
+        // version (e.g. previous 1.1.1 -> suggested 1.1.2). Only when the
+        // user hasn't already typed one — their manual edit always wins.
+        if (!string.IsNullOrEmpty(lastPackageVersion))
+            _versionBox.Text = VersionIncrementer.Increment(lastPackageVersion);
+        else
+            _versionBox.Text = Draft.Version ?? string.Empty;
         UpdateProjectError();
         UpdateSettingsSummary();
         Wizard.OnDraftChanged();
@@ -952,7 +970,10 @@ internal sealed class StepPublish : WizardStep
     {
         if (_projectBox.Items.Count == 0 && Draft.FolderPath is not null)
         {
-            _projectError.Text = $"No .csproj found under '{Draft.FolderPath}' — this step cannot proceed.";
+            _projectError.Text =
+                $"No publishable web project (WebForms or .NET Core WebApp) found under '{Draft.FolderPath}'. " +
+                "Class libraries that only produce a DLL are hidden. Move a web .csproj into the folder " +
+                "or pick a different folder.";
         }
         else
         {
@@ -1032,17 +1053,29 @@ internal sealed class StepPublish : WizardStep
     }
 
     /// <summary>Recursively finds .csproj files under the folder, skipping
-    /// build/dependency directories (bin, obj, .git).</summary>
+    /// build/dependency directories (bin, obj, .git). By default FILTERS to
+    /// publishable web projects only (classic .NET Framework Web Applications
+    /// and SDK-style <c>Microsoft.NET.Sdk.Web</c> apps) so class libraries
+    /// that only emit a DLL don't clutter the picker — but when no web
+    /// projects are found, ALL discovered projects are returned so the user
+    /// is never stuck (e.g. an unusual web project style the detector missed
+    /// still shows up and can be picked manually).</summary>
     private static List<string> DiscoverProjects(string rootFolder)
     {
-        var results = new List<string>();
+        var all = new List<string>();
+        var web = new List<string>();
         var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "bin", "obj", ".git" };
 
         void Walk(string directory)
         {
             try
             {
-                results.AddRange(Directory.EnumerateFiles(directory, "*.csproj"));
+                foreach (var csproj in Directory.EnumerateFiles(directory, "*.csproj"))
+                {
+                    all.Add(csproj);
+                    if (WebProjectDetector.IsWebProject(csproj))
+                        web.Add(csproj);
+                }
                 foreach (var sub in Directory.EnumerateDirectories(directory))
                 {
                     if (skip.Contains(Path.GetFileName(sub)))
@@ -1057,6 +1090,9 @@ internal sealed class StepPublish : WizardStep
         }
 
         Walk(rootFolder);
-        return results;
+
+        // Prefer web projects; fall back to everything when the filter yields
+        // nothing so the user is never stuck on a folder the detector missed.
+        return web.Count > 0 ? web : all;
     }
 }

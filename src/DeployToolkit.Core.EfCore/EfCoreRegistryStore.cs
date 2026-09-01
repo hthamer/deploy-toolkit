@@ -224,6 +224,27 @@ public sealed class EfCoreRegistryStore : IRegistryStore
         return existing;
     }
 
+    public async Task DeleteComponentAsync(string componentId)
+    {
+        if (string.IsNullOrWhiteSpace(componentId))
+            throw new ArgumentException("ComponentId is required.", nameof(componentId));
+
+        await using var db = await _factory.CreateDbContextAsync();
+
+        var component = await db.Components.FirstOrDefaultAsync(c => c.ComponentId == componentId)
+            ?? throw new InvalidOperationException($"Component {componentId} not found.");
+
+        // Audit-trail rule: never cascade-delete a parent with children. The
+        // user must delete the packages first (DeletePackageAsync).
+        var packageCount = await db.Packages.CountAsync(p => p.ComponentId == componentId);
+        if (packageCount > 0)
+            throw new InvalidOperationException(
+                $"Component '{component.Name}' still has {packageCount} package(s). Delete its packages first — registry rows are an audit trail and are never cascade-deleted.");
+
+        db.Components.Remove(component);
+        await db.SaveChangesAsync();
+    }
+
     // ---------------------------------------------------------------
     // Packages
 

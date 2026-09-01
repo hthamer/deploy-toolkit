@@ -116,4 +116,71 @@ public static class WebProjectDetector
 
         return false;
     }
+
+    /// <summary>
+    /// True when <paramref name="csprojPath"/> is a publishable WEB project —
+    /// i.e. it produces a deployable web output (an ASP.NET app), NOT a plain
+    /// class library that only emits a DLL. Used by the Packager's publish
+    /// step to filter the discovered .csproj list down to projects the tool
+    /// can actually publish (user request: "filter by only the WebForms
+    /// output projects or .NET Core WebApps, not the class libraries that
+    /// will generate only DLLs").
+    ///
+    /// Accepts:
+    ///  <list type="bullet">
+    ///   <item>Classic .NET Framework Web Application projects (non-SDK
+    ///    csproj importing Microsoft.WebApplication.targets or carrying the
+    ///    Web Application project-type GUID — see
+    ///    <see cref="IsNetFrameworkWebApp"/>).</item>
+    ///   <item>SDK-style web projects — <c>Microsoft.NET.Sdk.Web</c> (the
+    ///    ASP.NET Core web SDK). Detected via the <c>Sdk</c> attribute.</item>
+    ///  </list>
+    /// Rejects plain SDK-style class libraries (<c>Microsoft.NET.Sdk</c>),
+    /// console apps, and everything that is not a web project. Missing or
+    /// unreadable files return false so the caller can fall through.
+    /// </summary>
+    public static bool IsWebProject(string? csprojPath)
+    {
+        if (string.IsNullOrWhiteSpace(csprojPath) || !File.Exists(csprojPath))
+            return false;
+
+        // Classic .NET Framework Web Application → publishable web app.
+        if (IsNetFrameworkWebApp(csprojPath))
+            return true;
+
+        XDocument document;
+        try
+        {
+            document = XDocument.Load(csprojPath, LoadOptions.None);
+        }
+        catch (Exception ex) when (ex is IOException or System.Xml.XmlException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        var root = document.Root;
+        if (root is null)
+            return false;
+
+        // SDK-style web project: <Project Sdk="Microsoft.NET.Sdk.Web">.
+        // SDK web projects get their web targets from the SDK and publish
+        // fine with `dotnet publish`.
+        var sdkAttr = root.Attribute("Sdk")?.Value;
+        if (string.Equals(sdkAttr, "Microsoft.NET.Sdk.Web", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Some hand-edited SDK web projects set the SDK via a top-level
+        // <PropertyGroup><Sdk>Microsoft.NET.Sdk.Web</Sdk></PropertyGroup>
+        // instead of the Project attribute — cover that too.
+        foreach (var element in document.Descendants())
+        {
+            if (string.Equals(element.Name.LocalName, "Sdk", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(element.Value?.Trim(), "Microsoft.NET.Sdk.Web", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

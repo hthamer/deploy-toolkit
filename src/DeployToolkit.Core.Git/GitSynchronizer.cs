@@ -88,6 +88,11 @@ public sealed class LibGit2Synchronizer : IGitSynchronizer
                 ?? throw new InvalidOperationException(
                     $"Repository '{repositoryPath}' has no remote configured (expected 'origin'). Add one before packaging.");
 
+            // Capture the remote URL ONCE — surfaced via GitSyncResult.RemoteUrl
+            // so the UI can display it in the Git section and a successful build
+            // can write it back to the client's GitRepositoryUrl when it differs.
+            var remoteUrl = remote.Url;
+
             // Fast, honest failure for unreachable servers: probing the
             // endpoint with a short timeout converts the classic
             // "fetch hangs for minutes against a dead VPN" experience into
@@ -132,7 +137,7 @@ public sealed class LibGit2Synchronizer : IGitSynchronizer
             {
                 return new GitSyncResult(
                     repositoryPath, branchName, headShaBefore, headShaBefore,
-                    GitSyncOutcome.FetchedOnly, uncommitted, untracked);
+                    GitSyncOutcome.FetchedOnly, uncommitted, untracked, remoteUrl);
             }
 
             // --- Dirty-tree policy (plan §5): warn => skip by default. ---
@@ -140,14 +145,14 @@ public sealed class LibGit2Synchronizer : IGitSynchronizer
             {
                 return new GitSyncResult(
                     repositoryPath, branchName, headShaBefore, headShaBefore,
-                    GitSyncOutcome.SkippedDirtyTree, uncommitted, untracked);
+                    GitSyncOutcome.SkippedDirtyTree, uncommitted, untracked, remoteUrl);
             }
 
             if (trackedTip.Sha == headShaBefore)
             {
                 return new GitSyncResult(
                     repositoryPath, branchName, headShaBefore, headShaBefore,
-                    GitSyncOutcome.UpToDate, uncommitted, untracked);
+                    GitSyncOutcome.UpToDate, uncommitted, untracked, remoteUrl);
             }
 
             // --- Pull, fast-forward only. Never a merge commit. ---
@@ -201,7 +206,7 @@ public sealed class LibGit2Synchronizer : IGitSynchronizer
 
             return new GitSyncResult(
                 repositoryPath, branchName, headShaAfter, headShaBefore,
-                outcome, uncommittedAfter, untrackedAfter);
+                outcome, uncommittedAfter, untrackedAfter, remoteUrl);
         }
     }
 
