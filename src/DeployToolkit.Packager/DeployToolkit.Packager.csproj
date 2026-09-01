@@ -28,6 +28,11 @@
   <ItemGroup>
     <ProjectReference Include="..\DeployToolkit.AppKit\DeployToolkit.AppKit.csproj" />
     <ProjectReference Include="..\DeployToolkit.Core\DeployToolkit.Core.csproj" />
+    <!-- Direct reference to DeployToolkit.Core.Database: StepScripts uses
+         MigrationScriptGenerator to produce EF migration .sql scripts from a
+         sibling database project. (The transitive pull via AppKit/Core doesn't
+         include the Database project, so this explicit reference is needed.) -->
+    <ProjectReference Include="..\DeployToolkit.Core.Database\DeployToolkit.Core.Database.csproj" />
   </ItemGroup>
 
 </Project>

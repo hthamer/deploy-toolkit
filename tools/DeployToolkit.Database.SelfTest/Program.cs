@@ -292,6 +292,65 @@ try
         !reportCancel.Success && reportCancel.FirstError is not null);
     Check("cancelled run leaves no partial effects", !await TableExistsAsync("CancelT"));
 
+    // ---------------------------------------------------------------
+    Console.WriteLine("== MigrationScriptGenerator.DiscoverMigrations (EF migration folder detection) ==");
+    var efRoot = Path.Combine(workRoot, "ef-project");
+    var migrationsDir = Path.Combine(efRoot, "Migrations");
+    Directory.CreateDirectory(migrationsDir);
+
+    // Three migrations: 20260101120000_InitialCreate, 20260201120000_AddUsers, 20260301120000_AddIndexes.
+    // Each needs at least one .cs file to be recognized (EF migration dirs contain .cs files).
+    var mig1 = Path.Combine(migrationsDir, "20260101120000_InitialCreate");
+    Directory.CreateDirectory(mig1);
+    File.WriteAllText(Path.Combine(mig1, "20260101120000_InitialCreate.cs"), "// mig");
+    var mig2 = Path.Combine(migrationsDir, "20260201120000_AddUsers");
+    Directory.CreateDirectory(mig2);
+    File.WriteAllText(Path.Combine(mig2, "20260201120000_AddUsers.cs"), "// mig");
+    var mig3 = Path.Combine(migrationsDir, "20260301120000_AddIndexes");
+    Directory.CreateDirectory(mig3);
+    File.WriteAllText(Path.Combine(mig3, "20260301120000_AddIndexes.cs"), "// mig");
+
+    // A stray folder that is NOT a migration (no timestamp_<name> pattern).
+    Directory.CreateDirectory(Path.Combine(migrationsDir, "NotAMigration"));
+    // A non-migration timestamped folder WITHOUT .cs files (should be rejected).
+    Directory.CreateDirectory(Path.Combine(migrationsDir, "20260401120000_NoCsFiles"));
+
+    var discovered = MigrationScriptGenerator.DiscoverMigrations(efRoot);
+    Check("discovers all 3 EF migrations", discovered.Count == 3);
+    Check("newest-first ordering (AddIndexes first)",
+        discovered[0].Name == "20260301120000_AddIndexes");
+    Check("second is AddUsers", discovered[1].Name == "20260201120000_AddUsers");
+    Check("oldest is InitialCreate", discovered[2].Name == "20260101120000_InitialCreate");
+    Check("DisplayName strips the timestamp prefix", discovered[0].DisplayName == "AddIndexes");
+    Check("stray non-migration folder excluded", !discovered.Any(m => m.Name == "NotAMigration"));
+    Check("timestamped folder without .cs excluded", !discovered.Any(m => m.Name == "20260401120000_NoCsFiles"));
+
+    Check("missing project folder yields empty list",
+        MigrationScriptGenerator.DiscoverMigrations(Path.Combine(workRoot, "missing")).Count == 0);
+    Check("project without Migrations folder yields empty list",
+        MigrationScriptGenerator.DiscoverMigrations(workRoot).Count == 0);
+
+    // ---------------------------------------------------------------
+    Console.WriteLine("== MigrationScriptGenerator.BuildArguments (dotnet ef script command) ==");
+    var args1 = MigrationScriptGenerator.BuildArguments(
+        @"C:\repo\DB Project", @"C:\out\script.sql", fromMigration: null, toMigration: null);
+    Check("full-schema script (no from/to) — quotes spaced project path",
+        args1 == "ef migrations script --project \"C:\\repo\\DB Project\" --output \"C:\\out\\script.sql\" --no-build");
+
+    var args2 = MigrationScriptGenerator.BuildArguments(
+        @"C:\repo\DB", @"C:\out\script.sql", fromMigration: "20260101120000_InitialCreate", toMigration: "20260301120000_AddIndexes");
+    Check("delta script — from/to migrations precede --project",
+        args2 == "ef migrations script 20260101120000_InitialCreate 20260301120000_AddIndexes --project C:\\repo\\DB --output C:\\out\\script.sql --no-build");
+
+    var argEx1 = false;
+    try { MigrationScriptGenerator.BuildArguments("", "out.sql", null, null); }
+    catch (ArgumentException) { argEx1 = true; }
+    Check("empty project folder throws ArgumentException", argEx1);
+    var argEx2 = false;
+    try { MigrationScriptGenerator.BuildArguments("proj", "", null, null); }
+    catch (ArgumentException) { argEx2 = true; }
+    Check("empty output file throws ArgumentException", argEx2);
+
     Console.WriteLine();
     Console.WriteLine("Note: SqlServerScriptRunner connection-string path is compile-verified only");
     Console.WriteLine("      (no SQL Server / Azure SQL available in this sandbox). All runner");

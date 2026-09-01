@@ -8,6 +8,15 @@ namespace DeployToolkit.Packager.Steps;
 /// Data (<see cref="DbScriptKind"/>). Scripts are embedded into the package
 /// under db/ and run by the Deployer after an explicit confirm — transaction
 /// safety is analyzed there (DeployToolkit.Core.Database).
+///
+/// <b>EF migrations generation (user request #2)</b>: a "Generate from EF
+/// migrations…" button opens <see cref="MigrationScriptDialog"/> — the user
+/// picks a sibling database project (different folder than the web project),
+/// the dialog discovers its <c>Migrations</c> folder, and runs
+/// <c>dotnet ef migrations script</c> to produce the SQL. The generated
+/// script is written to a temp file and attached to the grid just like a
+/// manually-added .sql file — the user can then edit/remove it and add more
+/// scripts on top.
 /// </summary>
 internal sealed class StepScripts : WizardStep
 {
@@ -40,6 +49,16 @@ internal sealed class StepScripts : WizardStep
         AppTheme.StyleButton(addButton);
         addButton.Click += (_, _) => AddScripts();
         buttons.Controls.Add(addButton);
+
+        // #2: Generate from EF migrations — pick a sibling DB project, the
+        // dialog discovers its Migrations folder and runs
+        // 'dotnet ef migrations script' to produce the SQL, which is then
+        // attached to the grid (editable like a manual .sql file).
+        var generateButton = new Button { Text = "Generate from EF migrations…" };
+        AppTheme.StyleButton(generateButton);
+        generateButton.Click += (_, _) => GenerateFromEfMigrations();
+        buttons.Controls.Add(generateButton);
+
         layout.Controls.Add(buttons);
 
         _grid = new DataGridView { Dock = DockStyle.Fill };
@@ -148,6 +167,56 @@ internal sealed class StepScripts : WizardStep
         }
 
         ReloadFromDraft();
+    }
+
+    /// <summary>#2: opens the EF-migrations dialog. On OK, the generated SQL
+    /// is written to a temp file and attached to the package as an editable
+    /// .sql script (tagged Schema by default — EF migrations are schema
+    /// changes). The user can then edit/remove it and add more scripts on
+    /// top, exactly like a manually-added .sql file.</summary>
+    private void GenerateFromEfMigrations()
+    {
+        // Default the dialog to the web project's parent — the DB project is
+        // usually a sibling (same solution folder), so the user starts near it.
+        var initialFolder = Draft.FolderPath is { } webFolder && Directory.Exists(webFolder)
+            ? Path.GetDirectoryName(webFolder)
+            : null;
+
+        using var dialog = new MigrationScriptDialog(initialFolder);
+        if (dialog.ShowDialog(this) != DialogResult.OK
+            || string.IsNullOrWhiteSpace(dialog.ResultScriptText)
+            || string.IsNullOrWhiteSpace(dialog.ResultFileName))
+            return;
+
+        var fileName = EnsureUniqueFileName(dialog.ResultFileName!);
+        var tempPath = Path.Combine(Path.GetTempPath(), "DeployToolkit", "ef-migrations",
+            $"{Guid.NewGuid():N}_{fileName}");
+        Directory.CreateDirectory(Path.GetDirectoryName(tempPath)!);
+        File.WriteAllText(tempPath, dialog.ResultScriptText!);
+
+        // Attach as a Schema script (EF migrations are schema changes by
+        // definition — the user can flip it to Data in the grid if needed).
+        Draft.DbScriptSourcePaths[fileName] = tempPath;
+        ReloadFromDraft();
+    }
+
+    /// <summary>Ensures <paramref name="desired"/> doesn't collide with an
+    /// already-attached script's name (same uniqueness rule as AddScripts).
+    /// Appends " (2)", " (3)", … before the <c>.sql</c> extension until it's
+    /// unique.</summary>
+    private string EnsureUniqueFileName(string desired)
+    {
+        if (!Draft.DbScriptSourcePaths.ContainsKey(desired))
+            return desired;
+
+        var stem = Path.GetFileNameWithoutExtension(desired);
+        var ext = Path.GetExtension(desired);
+        for (var i = 2; ; i++)
+        {
+            var candidate = $"{stem} ({i}){ext}";
+            if (!Draft.DbScriptSourcePaths.ContainsKey(candidate))
+                return candidate;
+        }
     }
 
     private void Grid_CellContentClick(object? sender, DataGridViewCellEventArgs e)

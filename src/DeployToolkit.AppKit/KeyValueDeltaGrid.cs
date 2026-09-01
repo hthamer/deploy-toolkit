@@ -148,8 +148,11 @@ public sealed class KeyValueDeltaGrid : UserControl
     public IReadOnlyList<AppSettingsChange> PreviewAgainst(string? existingJson)
         => AppSettingsMerger.Preview(existingJson ?? "{}", GetDelta());
 
-    /// <summary>JSON-or-string value rule (documented on the type).</summary>
-    internal static object? ParseValue(string? raw)
+    /// <summary>JSON-or-string value rule (documented on the type). Public so
+    /// the Packager's StepDelta can parse auto-seeded appsettings values
+    /// (rendered as JSON by <c>AppSettingsKeyReader</c>) into the typed form
+    /// <see cref="GetDelta"/> produces — same rule, one place.</summary>
+    public static object? ParseValue(string? raw)
     {
         if (string.IsNullOrEmpty(raw))
             return string.Empty; // empty text = empty string (JSON "" would also work; both yield "")

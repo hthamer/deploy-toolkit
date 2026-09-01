@@ -164,6 +164,49 @@ try
     Check("no-op delta produces zero reported changes", noopPreview.Count == 0);
 
     // ---------------------------------------------------------------
+    Console.WriteLine("== AppSettingsKeyReader (auto-seed appsettings keys) ==");
+    var seedJson = """
+    {
+      "Logging": { "LogLevel": { "Default": "Information" } },
+      "Smtp": { "Host": "smtp.example.com", "Port": 587 },
+      "AllowedHosts": "*",
+      "FeatureFlags": ["A", "B"],
+      "NullKey": null
+    }
+    """;
+    var seed = AppSettingsKeyReader.ReadKeys(seedJson);
+    Check("flatten nested object to dotted keys",
+        seed.ContainsKey("Logging:LogLevel:Default") && seed["Logging:LogLevel:Default"] == "\"Information\"");
+    Check("flatten two-level nesting",
+        seed.ContainsKey("Smtp:Host") && seed["Smtp:Host"] == "\"smtp.example.com\"");
+    Check("flatten number renders as JSON number",
+        seed.ContainsKey("Smtp:Port") && seed["Smtp:Port"] == "587");
+    Check("flatten scalar top-level",
+        seed.ContainsKey("AllowedHosts") && seed["AllowedHosts"] == "\"*\"");
+    Check("flatten array indexes with :0, :1",
+        seed.ContainsKey("FeatureFlags:0") && seed["FeatureFlags:0"] == "\"A\""
+        && seed.ContainsKey("FeatureFlags:1") && seed["FeatureFlags:1"] == "\"B\"");
+    Check("explicit null value kept as 'null'",
+        seed.ContainsKey("NullKey") && seed["NullKey"] == "null");
+    Check("total key count is 7", seed.Count == 7);
+
+    Check("empty JSON yields no keys", AppSettingsKeyReader.ReadKeys("").Count == 0);
+    Check("null yields no keys", AppSettingsKeyReader.ReadKeys(null).Count == 0);
+    Check("non-JSON yields no keys (no throw)", AppSettingsKeyReader.ReadKeys("not json").Count == 0);
+    Check("top-level array yields no dotted keys", AppSettingsKeyReader.ReadKeys("[1,2,3]").Count == 0);
+    Check("top-level scalar yields no dotted keys", AppSettingsKeyReader.ReadKeys("42").Count == 0);
+
+    // ReadKeysFromFile round-trip: write the seed JSON to a file, read it back.
+    var seedFile = Path.Combine(workRoot, "appsettings-test.json");
+    File.WriteAllText(seedFile, seedJson);
+    var seedFromFile = AppSettingsKeyReader.ReadKeysFromFile(seedFile);
+    Check("ReadKeysFromFile matches ReadKeys", seedFromFile.Count == seed.Count && seedFromFile["Smtp:Host"] == seed["Smtp:Host"]);
+    Check("ReadKeysFromFile returns empty for missing file",
+        AppSettingsKeyReader.ReadKeysFromFile(Path.Combine(workRoot, "missing.json")).Count == 0);
+    Check("ReadKeysFromFile returns empty for null path",
+        AppSettingsKeyReader.ReadKeysFromFile(null).Count == 0);
+
+    // ---------------------------------------------------------------
     Console.WriteLine("== BackupManager ==");
     var siteRoot = Path.Combine(workRoot, "site");
     Directory.CreateDirectory(Path.Combine(siteRoot, "bin"));
