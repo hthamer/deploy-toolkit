@@ -59,10 +59,16 @@ public sealed class StalePackagesDialog : Form
             MultiSelect = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         };
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Version", HeaderText = "Version", ReadOnly = true });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "CreatedUtc", HeaderText = "Created (UTC)", ReadOnly = true });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "GitSha", HeaderText = "Git SHA", ReadOnly = true });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "Status", ReadOnly = true });
+        // AutoGenerateColumns=false, so each column MUST set DataPropertyName
+        // to the matching PackageRecord property — otherwise the column's Name
+        // and HeaderText render but the cells stay empty (the grid has no
+        // property to pull the cell value from). This was the bug: the columns
+        // set Name + HeaderText but not DataPropertyName, so Version / Created
+        // (UTC) / Git SHA all showed blank.
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Version", HeaderText = "Version", DataPropertyName = nameof(PackageRecord.Version), ReadOnly = true });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "CreatedUtc", HeaderText = "Created (UTC)", DataPropertyName = nameof(PackageRecord.CreatedUtc), ReadOnly = true });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "GitSha", HeaderText = "Git SHA", DataPropertyName = nameof(PackageRecord.GitCommitSha), ReadOnly = true });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "Status", DataPropertyName = nameof(PackageRecord.Status), ReadOnly = true });
         AppTheme.StyleGrid(_grid, readOnly: true);
         _grid.SelectionChanged += (_, _) => UpdateButtons();
         layout.Controls.Add(_grid, 0, 1);
