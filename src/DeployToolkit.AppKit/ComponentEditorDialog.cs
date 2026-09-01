@@ -42,23 +42,16 @@ public sealed class ComponentEditorDialog : Form
     public DeploymentComponent? ResultComponent { get; private set; }
 
     /// <summary>
-    /// Add-mode constructor: builds a brand-new component (a fresh ComponentId
-    /// is generated on OK). The TargetType picker is fully editable.
+    /// Constructs the dialog. Pass <paramref name="existing"/> = null (or
+    /// omit it) for ADD mode — a fresh <c>ComponentId</c> is generated on OK
+    /// and the <c>TargetType</c> picker is fully editable. Pass an existing
+    /// <see cref="DeploymentComponent"/> for EDIT mode — every field is
+    /// pre-filled, the <c>TargetType</c> picker is LOCKED (the target kind
+    /// can't change after a component exists — its IIS site / Azure app /
+    /// Plesk site bindings depend on it), and the existing
+    /// <c>ComponentId</c> / <c>ClientId</c> are preserved on OK.
     /// </summary>
-    public ComponentEditorDialog(string clientId) : this(clientId, existing: null) { }
-
-    /// <summary>
-    /// Edit-mode constructor: pre-fills every field from <paramref name="existing"/>
-    /// and, on OK, returns a rebuilt <see cref="DeploymentComponent"/> that
-    /// preserves the existing <c>ComponentId</c> / <c>ClientId</c>. The
-    /// TargetType picker is LOCKED (the target kind cannot change after a
-    /// component exists — its IIS site / Azure app / Plesk site bindings
-    /// depend on it) and shown read-only.
-    /// </summary>
-    public ComponentEditorDialog(string clientId, DeploymentComponent existing)
-        : this(clientId, (DeploymentComponent?)existing) { }
-
-    private ComponentEditorDialog(string clientId, DeploymentComponent? existing)
+    public ComponentEditorDialog(string clientId, DeploymentComponent? existing = null)
     {
         _clientId = clientId;
         _existingComponentId = existing?.ComponentId;
