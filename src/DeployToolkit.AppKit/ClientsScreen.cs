@@ -1028,19 +1028,17 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
         });
     }
 
-    /// <summary>The currently selected component in the components grid (the
-    /// full <see cref="DeploymentComponent"/> from the in-memory list), or
-    /// null when nothing is selected.</summary>
+    /// <summary>The currently selected component in the components grid, or
+    /// null when nothing is selected. Uses <see cref="DataGridViewRow.DataBoundItem"/>
+    /// (the bound <see cref="ComponentRow"/>), NOT a column-name lookup — the
+    /// grid's columns are created without an explicit <c>Name</c> property, so
+    /// <c>Cells["Name"]</c> throws <c>Column named Name cannot be found</c>
+    /// (and even if it worked, it would be a fragile name→object re-lookup).
+    /// <see cref="ComponentRow"/> already carries the full
+    /// <see cref="DeploymentComponent"/>, so the bound item is the source of
+    /// truth. Mirrors <see cref="SelectedPackage"/>.</summary>
     private DeploymentComponent? SelectedComponent
-    {
-        get
-        {
-            if (_componentsGrid.CurrentRow is null)
-                return null;
-            var name = _componentsGrid.CurrentRow.Cells["Name"]?.Value as string;
-            return _clientComponents.FirstOrDefault(c => c.Name == name);
-        }
-    }
+        => (_componentsGrid.CurrentRow?.DataBoundItem as ComponentRow)?.Component;
 
     private void OnComponentSelectionChanged(object? sender, EventArgs e)
     {
