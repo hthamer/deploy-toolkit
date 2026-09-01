@@ -278,7 +278,12 @@ internal sealed class StepDiff : WizardStep
 
         // Count the sensitive rows separately so the user can tell which
         // exclusions are policy (can't override) vs manual (can toggle).
-        var sensitiveNew = diff.ChangedOrNewFiles.Count(SensitiveFileFilter.IsSensitiveOrAppSettingsVariant);
+        // ChangedOrNewFiles is IReadOnlyList<ManifestFile>, so the predicate
+        // must take a ManifestFile and read its .Path — the method-group
+        // SensitiveFileFilter.IsSensitiveOrAppSettingsVariant is Func<string,bool>
+        // and won't bind to Func<ManifestFile,bool> (CS1929). DeletedFiles is
+        // IReadOnlyList<string>, so the method group binds directly there.
+        var sensitiveNew = diff.ChangedOrNewFiles.Count(f => SensitiveFileFilter.IsSensitiveOrAppSettingsVariant(f.Path));
         var sensitiveDeleted = diff.DeletedFiles.Count(SensitiveFileFilter.IsSensitiveOrAppSettingsVariant);
         var sensitiveTotal = sensitiveNew + sensitiveDeleted;
         var manualExcluded = (diff.ChangedOrNewFiles.Count - includedNew - sensitiveNew)
