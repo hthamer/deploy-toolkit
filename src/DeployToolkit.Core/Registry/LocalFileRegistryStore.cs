@@ -179,7 +179,10 @@ public sealed class LocalFileRegistryStore : IRegistryStore
 
             // Audit-trail rule: never cascade-delete a parent with children.
             // The user must delete the packages first (DeletePackageAsync).
-            var packages = await LoadAsync<List<PackageRecord>>(PackagesFile) ?? new();
+            // NOTE: PackagesFile is a METHOD (per-component file under
+            // packages/<componentId>.json), not a property like ClientsFile /
+            // ComponentsFile — so it must be invoked with the componentId.
+            var packages = await LoadAsync<List<PackageRecord>>(PackagesFile(componentId)) ?? new();
             var packageCount = packages.Count(p => p.ComponentId == componentId);
             if (packageCount > 0)
                 throw new InvalidOperationException(
