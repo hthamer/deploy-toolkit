@@ -187,7 +187,14 @@ internal sealed class StepPublish : WizardStep
         AddField(settingsTable, ref settingsRow, "Deployment mode:", _deployModeBox);
 
         _runtimeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Width = 220 };
-        _runtimeBox.Items.AddRange([PortableRuntime, "win-x64", "win-x86", "win-arm64", "win-arm"]);
+        // The "(project default)" / portable label first, then the canonical
+        // VS publish-wizard RIDs (shared with the client editor via
+        // TargetRuntimes so the two surfaces never drift). DropDown (not
+        // DropDownList) keeps the existing behavior: the user can still type
+        // a custom RID not in the list.
+        _runtimeBox.Items.Add(PortableRuntime);
+        foreach (var rid in DeployToolkit.AppKit.TargetRuntimes.ConcreteRids)
+            _runtimeBox.Items.Add(rid);
         _runtimeBox.SelectedIndexChanged += (_, _) => UpdateSettingsSummary();
         _runtimeBox.TextChanged += (_, _) => UpdateSettingsSummary();
         AddField(settingsTable, ref settingsRow, "Target runtime:", _runtimeBox);
@@ -895,7 +902,7 @@ internal sealed class StepPublish : WizardStep
         // Web apps are published via MSBuild (no -r) — skip RID folding so a
         // leftover runtime value can't produce a bogus switch msbuild rejects.
         if (!_isWebApp &&
-            runtime.Length > 0 && !string.Equals(runtime, PortableRuntime, StringComparison.OrdinalIgnoreCase))
+            runtime.Length > 0 && !DeployToolkit.AppKit.TargetRuntimes.IsPortableLabel(runtime))
         {
             if (runtime.Contains(' '))
                 throw new ArgumentException("Target runtime must be a single runtime identifier (e.g. win-x64) or empty.");

@@ -55,7 +55,7 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
     private TextBox _gitRepositoryUrlBox = null!;
     private TextBox _deploymentBranchBox = null!;
     private ComboBox _deploymentTypeBox = null!;
-    private TextBox _targetRuntimeBox = null!;
+    private ComboBox _targetRuntimeBox = null!;
     private TextBox _additionalPublishOptionsBox = null!;
     private CheckBox _hasAmcBox = null!;
     private DateTimePicker _amcExpiryPicker = null!;
@@ -422,7 +422,15 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
             _deploymentTypeBox.Items.Add(type);
         _deploymentTypeBox.SelectedIndex = 0;
 
-        _targetRuntimeBox = new TextBox { PlaceholderText = "win-x64" };
+        // Target runtime: strict dropdown (DropDownList, not editable) with the
+        // Visual Studio publish-wizard RIDs — "portable" first (no RID → null),
+        // then the concrete RIDs. A stored custom RID that isn't in the list is
+        // added at the end on load so it stays visible rather than being
+        // silently blanked (see LoadClientIntoForm).
+        _targetRuntimeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+        foreach (var rid in TargetRuntimes.AllWithPortableFirst)
+            _targetRuntimeBox.Items.Add(rid);
+        _targetRuntimeBox.SelectedIndex = 0; // "portable" by default
         _additionalPublishOptionsBox = new TextBox { PlaceholderText = "-p:PublishTrimmed=false --nologo" };
         _hasAmcBox = new CheckBox { Text = "Client has an AMC (annual maintenance contract)", AutoSize = true };
         _amcExpiryPicker = new DateTimePicker { ShowCheckBox = true, Format = DateTimePickerFormat.Short, Width = 140 };
@@ -840,7 +848,11 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
 
         var configuration = SafeParsePublishConfiguration(client);
         _deploymentTypeBox.SelectedItem = configuration?.DeploymentType ?? PublishDeploymentType.FrameworkDependent;
-        _targetRuntimeBox.Text = configuration?.TargetRuntime ?? string.Empty;
+        // Map the stored TargetRuntime (null or a RID) onto the dropdown.
+        // null → "portable" (the first item). A stored RID not in the canonical
+        // list is appended so the user still sees what's stored rather than a
+        // blank — they can then pick a standard RID from the list.
+        SelectTargetRuntime(configuration?.TargetRuntime);
         _additionalPublishOptionsBox.Text = configuration?.AdditionalPublishOptions ?? string.Empty;
 
         _hasAmcBox.Checked = client.HasAmc;
@@ -867,7 +879,7 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
         _gitRepositoryUrlBox.Text = string.Empty;
         _deploymentBranchBox.Text = string.Empty;
         _deploymentTypeBox.SelectedItem = PublishDeploymentType.FrameworkDependent;
-        _targetRuntimeBox.Text = string.Empty;
+        _targetRuntimeBox.SelectedIndex = 0; // "portable" (no RID)
         _additionalPublishOptionsBox.Text = string.Empty;
         _hasAmcBox.Checked = false;
         _amcExpiryPicker.Checked = false;
@@ -895,7 +907,10 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
         var deploymentType = _deploymentTypeBox.SelectedItem is PublishDeploymentType type
             ? type
             : PublishDeploymentType.FrameworkDependent;
-        var runtime = NullIfEmpty(_targetRuntimeBox.Text);
+        // "portable" (and the publish-step's "(project default)" spelling)
+        // map to null — the existing PublishConfiguration.TargetRuntime
+        // contract treats null as "no RID". Concrete RIDs are stored verbatim.
+        var runtime = TargetRuntimes.LabelToStoredValue(_targetRuntimeBox.Text);
         var options = NullIfEmpty(_additionalPublishOptionsBox.Text);
 
         if (deploymentType == PublishDeploymentType.FrameworkDependent && runtime is null && options is null)
@@ -1273,6 +1288,29 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
     {
         var trimmed = text?.Trim();
         return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
+
+    /// <summary>Selects the dropdown item matching <paramref name="storedRuntime"/>
+    /// (null → "portable", the first item). When the stored value is a RID not
+    /// in the canonical list (e.g. a custom RID added out-of-band), appends it
+    /// to the dropdown so the user sees what's stored rather than a blank —
+    /// they can then pick a standard RID from the list to replace it.</summary>
+    private void SelectTargetRuntime(string? storedRuntime)
+    {
+        var label = TargetRuntimes.StoredValueToClientLabel(storedRuntime);
+
+        // Fast path: the label is already in the list.
+        var idx = _targetRuntimeBox.Items.IndexOf(label);
+        if (idx >= 0)
+        {
+            _targetRuntimeBox.SelectedIndex = idx;
+            return;
+        }
+
+        // Custom RID not in the canonical list — append and select it so the
+        // stored value stays visible (never silently blanked).
+        _targetRuntimeBox.Items.Add(label);
+        _targetRuntimeBox.SelectedIndex = _targetRuntimeBox.Items.Count - 1;
     }
 
     private sealed record ClientRow(

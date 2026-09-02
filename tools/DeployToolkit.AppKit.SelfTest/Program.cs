@@ -479,6 +479,54 @@ catch (ArgumentNullException)
 }
 Check("PlanCloseAll rejects a null guarded-list", nullArgThrown);
 
+// ---------------------------------------------------------------
+Console.WriteLine("== TargetRuntimes: canonical RID list + portable mapping ==");
+Check("portable is the first item in the dropdown list",
+    TargetRuntimes.AllWithPortableFirst[0] == TargetRuntimes.PortableLabel);
+Check("list contains the VS publish-wizard RIDs",
+    TargetRuntimes.ConcreteRids.Contains("win-x64")
+    && TargetRuntimes.ConcreteRids.Contains("win-x86")
+    && TargetRuntimes.ConcreteRids.Contains("win-arm64")
+    && TargetRuntimes.ConcreteRids.Contains("linux-x64")
+    && TargetRuntimes.ConcreteRids.Contains("linux-arm64")
+    && TargetRuntimes.ConcreteRids.Contains("osx-x64")
+    && TargetRuntimes.ConcreteRids.Contains("osx-arm64"));
+Check("list does NOT contain the deprecated win-arm",
+    !TargetRuntimes.ConcreteRids.Contains("win-arm"));
+Check("AllWithPortableFirst = portable + concrete (count = 1 + 7)",
+    TargetRuntimes.AllWithPortableFirst.Count == 1 + TargetRuntimes.ConcreteRids.Count);
+
+Check("IsPortableLabel: 'portable' (client editor spelling)",
+    TargetRuntimes.IsPortableLabel("portable"));
+Check("IsPortableLabel: '(project default)' (publish step spelling)",
+    TargetRuntimes.IsPortableLabel("(project default)"));
+Check("IsPortableLabel: case-insensitive",
+    TargetRuntimes.IsPortableLabel("PORTABLE"));
+Check("IsPortableLabel: null/empty are not portable",
+    !TargetRuntimes.IsPortableLabel(null) && !TargetRuntimes.IsPortableLabel(""));
+Check("IsPortableLabel: a concrete RID is not portable",
+    !TargetRuntimes.IsPortableLabel("win-x64"));
+
+Check("LabelToStoredValue: 'portable' → null",
+    TargetRuntimes.LabelToStoredValue("portable") is null);
+Check("LabelToStoredValue: '(project default)' → null",
+    TargetRuntimes.LabelToStoredValue("(project default)") is null);
+Check("LabelToStoredValue: 'win-x64' → 'win-x64' (verbatim)",
+    TargetRuntimes.LabelToStoredValue("win-x64") == "win-x64");
+Check("LabelToStoredValue: null/empty/whitespace → null",
+    TargetRuntimes.LabelToStoredValue(null) is null
+    && TargetRuntimes.LabelToStoredValue("") is null
+    && TargetRuntimes.LabelToStoredValue("   ") is null);
+
+Check("StoredValueToClientLabel: null → 'portable'",
+    TargetRuntimes.StoredValueToClientLabel(null) == "portable");
+Check("StoredValueToClientLabel: empty → 'portable'",
+    TargetRuntimes.StoredValueToClientLabel("") == "portable");
+Check("StoredValueToClientLabel: 'win-x64' → 'win-x64' (verbatim)",
+    TargetRuntimes.StoredValueToClientLabel("win-x64") == "win-x64");
+Check("StoredValueToClientLabel: custom RID preserved verbatim",
+    TargetRuntimes.StoredValueToClientLabel("debian.11-x64") == "debian.11-x64");
+
 Console.WriteLine();
 Console.WriteLine($"AppKit registry-connection self-test: {passed} passed, {failures.Count} failed");
 if (failures.Count > 0)
