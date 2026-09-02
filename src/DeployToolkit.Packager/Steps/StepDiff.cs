@@ -41,10 +41,10 @@ internal sealed class StepDiff : WizardStep
             Dock = DockStyle.Fill,
             ColumnCount = 1,
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // 0: baseline label
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // 1: grid (EXPANDS)
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // 2: summary label
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // 3: note
 
         _baselineLabel = new Label
         {
@@ -54,7 +54,7 @@ internal sealed class StepDiff : WizardStep
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };
-        layout.Controls.Add(_baselineLabel);
+        layout.Controls.Add(_baselineLabel, 0, 0);
 
         _grid = new DataGridView { Dock = DockStyle.Fill };
         AppTheme.StyleGrid(_grid, readOnly: false);
@@ -95,7 +95,11 @@ internal sealed class StepDiff : WizardStep
             if (_grid.IsCurrentCellDirty)
                 _grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
         };
-        layout.Controls.Add(_grid);
+        // The grid goes in row 1 (the Percent-100 row) so it EXPANDS to fill
+        // the remaining vertical space. Added explicitly via SetRow so the
+        // TableLayoutPanel places it in the expand row, not the next AutoSize
+        // row in add order.
+        layout.Controls.Add(_grid, 0, 1);
 
         _summaryLabel = new Label
         {
@@ -105,7 +109,7 @@ internal sealed class StepDiff : WizardStep
             Dock = DockStyle.Fill,
             Font = new Font(AppTheme.FontFamily, 9f, FontStyle.Bold),
         };
-        layout.Controls.Add(_summaryLabel);
+        layout.Controls.Add(_summaryLabel, 0, 2);
 
         var note = new Label
         {
@@ -119,7 +123,7 @@ internal sealed class StepDiff : WizardStep
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };
-        layout.Controls.Add(note);
+        layout.Controls.Add(note, 0, 3);
 
         Controls.Add(layout);
     }

@@ -43,6 +43,11 @@ internal sealed class StepScripts : WizardStep
     private readonly Label _countLabel;
     private bool _loadingEfGrid;
     private bool _loadingSqlGrid;
+    /// <summary>Suppresses the project-box SelectedIndexChanged handler while
+    /// the box is being populated programmatically (so setting SelectedIndex
+    /// during PopulateEfProjectsAsync doesn't fire the async migration load
+    /// re-entrantly before population finished).</summary>
+    private bool _suppressProjectEvents;
     private IReadOnlyList<EfMigration> _efMigrations = Array.Empty<EfMigration>();
 
     public StepScripts(PackagerWizardForm wizard, PackageDraft draft)
@@ -69,7 +74,17 @@ internal sealed class StepScripts : WizardStep
         efProjectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         efProjectRow.Controls.Add(new Label { Text = "DB project:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(2, 6, 8, 2) }, 0, 0);
         _efProjectBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-        _efProjectBox.SelectedIndexChanged += (_, _) => _ = OnEfProjectSelectedAsync();
+        _efProjectBox.SelectedIndexChanged += (_, _) =>
+        {
+            // Skip the async load while populating programmatically —
+            // PopulateEfProjectsAsync fires the load explicitly after the
+            // box is ready, so a re-entrant fire-and-forget here would race
+            // (and could call Guard.RunAsync while the wizard is already busy
+            // from the OnEnter Guard).
+            if (_suppressProjectEvents)
+                return;
+            _ = OnEfProjectSelectedAsync();
+        };
         efProjectRow.Controls.Add(_efProjectBox, 1, 0);
         layout.Controls.Add(efProjectRow);
 
@@ -209,22 +224,37 @@ internal sealed class StepScripts : WizardStep
         }
 
         var projects = await Task.Run(() => DiscoverAllProjects(Draft.FolderPath));
-        _efProjectBox.Items.Clear();
-        foreach (var p in projects)
-            _efProjectBox.Items.Add(p);
 
-        // Restore the previously selected project if it's still in the list.
-        if (Draft.EfMigrationsProjectPath is { } prev && projects.Contains(prev))
+        // Suppress the SelectedIndexChanged handler while programmatically
+        // clearing + re-populating the box (Clear/Items.Add/SelectedIndex all
+        // fire it). The load is triggered explicitly below for the final
+        // selection so it runs exactly once, after the box is ready.
+        _suppressProjectEvents = true;
+        try
         {
-            _efProjectBox.SelectedItem = prev;
+            _efProjectBox.Items.Clear();
+            foreach (var p in projects)
+                _efProjectBox.Items.Add(p);
+
+            // Restore the previously selected project if it's still in the list;
+            // otherwise auto-select the first project.
+            if (Draft.EfMigrationsProjectPath is { } prev && projects.Contains(prev))
+                _efProjectBox.SelectedItem = prev;
+            else if (projects.Count > 0 && _efProjectBox.SelectedIndex < 0)
+                _efProjectBox.SelectedIndex = 0; // auto-select the first project
         }
-        else if (projects.Count > 0 && _efProjectBox.SelectedIndex < 0)
-        {
-            _efProjectBox.SelectedIndex = 0; // auto-select the first project
-        }
+        finally { _suppressProjectEvents = false; }
 
         if (projects.Count == 0)
+        {
             _efHintLabel.Text = "No .csproj found under the selected folder.";
+            return;
+        }
+
+        // Trigger the migration load for the selected project (the handler was
+        // suppressed above, so it didn't fire). This runs exactly once, after
+        // the box is fully populated.
+        await OnEfProjectSelectedAsync();
     }
 
     private async Task OnEfProjectSelectedAsync()

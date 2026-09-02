@@ -58,10 +58,17 @@ public static class MigrationScriptGenerator
 {
     /// <summary>
     /// Discovers EF Core migrations under <c>&lt;dbProjectFolder&gt;/Migrations</c>.
-    /// Returns each migration as a directory name (e.g.
-    /// <c>20260901120000_InitialCreate</c>), newest-first by the timestamp
-    /// prefix. Returns an empty list when the Migrations folder is absent or
-    /// holds no migration-shaped subdirectories.
+    /// EF Core migrations are FILES (not subdirectories): each migration is a
+    /// pair <c>&lt;timestamp&gt;_&lt;Name&gt;.cs</c> +
+    /// <c>&lt;timestamp&gt;_&lt;Name&gt;.Designer.cs</c>, plus a single
+    /// <c>&lt;DbContext&gt;ModelSnapshot.cs</c>. This method scans the .cs
+    /// FILES in the Migrations folder, picks the migration files (timestamp +
+    /// underscore + name, excluding <c>.Designer.cs</c> and
+    /// <c>ModelSnapshot.cs</c>), and returns each as a
+    /// <see cref="EfMigration"/> with the full migration name
+    /// (<c>20260901120000_InitialCreate</c>), newest-first by timestamp.
+    /// Returns an empty list when the Migrations folder is absent or holds no
+    /// migration-shaped files.
     /// </summary>
     public static IReadOnlyList<EfMigration> DiscoverMigrations(string dbProjectFolder)
     {
@@ -73,27 +80,36 @@ public static class MigrationScriptGenerator
             return Array.Empty<EfMigration>();
 
         var migrations = new List<(long Timestamp, string Name, string Path)>();
-        foreach (var dir in Directory.EnumerateDirectories(migrationsDir))
+        // EF Core migrations are FILES named <timestamp>_<Name>.cs — scan the
+        // .cs files directly (NOT subdirectories; the earlier directory-based
+        // scan found nothing because EF Core never creates migration subfolders).
+        foreach (var file in Directory.EnumerateFiles(migrationsDir, "*.cs"))
         {
-            var name = Path.GetFileName(dir);
-            var underscore = name.IndexOf('_');
-            if (underscore <= 0)
-                continue; // not a migration folder (EF migration dirs are <timestamp>_<name>)
+            var fileName = Path.GetFileNameWithoutExtension(file);
+            // Exclude the generated designer + model-snapshot files — they're
+            // not migrations.
+            if (fileName.EndsWith(".Designer", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (fileName.EndsWith("ModelSnapshot", StringComparison.OrdinalIgnoreCase))
+                continue;
 
-            var tsStr = name[..underscore];
-            if (tsStr.Length < 14 || !tsStr.All(char.IsDigit))
-                continue; // EF timestamps are yyyyMMddHHmmss (14 digits)
+            var underscore = fileName.IndexOf('_');
+            if (underscore <= 0)
+                continue; // not a migration file (migrations are <timestamp>_<name>)
+
+            var tsStr = fileName[..underscore];
+            // EF timestamps are yyyyMMddHHmmss (14 digits). Be lenient: accept
+            // 12-16 digits so older EF formats (yyyyMMddHHmm) still work.
+            if (tsStr.Length < 12 || tsStr.Length > 16 || !tsStr.All(char.IsDigit))
+                continue;
 
             if (!long.TryParse(tsStr, out var ts))
                 continue;
 
-            // Must contain at least the migration .cs file (EF also generates a
-            // .Designer.cs and a ModelSnapshot). Filter to real migration dirs
-            // (not stray timestamped folders).
-            if (!Directory.EnumerateFiles(dir, "*.cs").Any())
-                continue;
-
-            migrations.Add((ts, name, dir));
+            // The full migration name = the file name without the extension
+            // (e.g. "20260901120000_InitialCreate"). This is what
+            // `dotnet ef migrations script` accepts as --from/--to.
+            migrations.Add((ts, fileName, file));
         }
 
         return migrations

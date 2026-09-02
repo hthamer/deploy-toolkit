@@ -293,37 +293,40 @@ try
     Check("cancelled run leaves no partial effects", !await TableExistsAsync("CancelT"));
 
     // ---------------------------------------------------------------
-    Console.WriteLine("== MigrationScriptGenerator.DiscoverMigrations (EF migration folder detection) ==");
+    Console.WriteLine("== MigrationScriptGenerator.DiscoverMigrations (EF migration file detection) ==");
     var efRoot = Path.Combine(workRoot, "ef-project");
     var migrationsDir = Path.Combine(efRoot, "Migrations");
     Directory.CreateDirectory(migrationsDir);
 
-    // Three migrations: 20260101120000_InitialCreate, 20260201120000_AddUsers, 20260301120000_AddIndexes.
-    // Each needs at least one .cs file to be recognized (EF migration dirs contain .cs files).
-    var mig1 = Path.Combine(migrationsDir, "20260101120000_InitialCreate");
-    Directory.CreateDirectory(mig1);
-    File.WriteAllText(Path.Combine(mig1, "20260101120000_InitialCreate.cs"), "// mig");
-    var mig2 = Path.Combine(migrationsDir, "20260201120000_AddUsers");
-    Directory.CreateDirectory(mig2);
-    File.WriteAllText(Path.Combine(mig2, "20260201120000_AddUsers.cs"), "// mig");
-    var mig3 = Path.Combine(migrationsDir, "20260301120000_AddIndexes");
-    Directory.CreateDirectory(mig3);
-    File.WriteAllText(Path.Combine(mig3, "20260301120000_AddIndexes.cs"), "// mig");
+    // EF Core migrations are FILES in the Migrations folder (not subdirectories):
+    //   <timestamp>_<Name>.cs
+    //   <timestamp>_<Name>.Designer.cs   (generated, not a migration)
+    //   <DbContext>ModelSnapshot.cs      (generated, not a migration)
+    // Three real migrations + the generated designer + snapshot files.
+    File.WriteAllText(Path.Combine(migrationsDir, "20260101120000_InitialCreate.cs"), "// mig");
+    File.WriteAllText(Path.Combine(migrationsDir, "20260101120000_InitialCreate.Designer.cs"), "// designer");
+    File.WriteAllText(Path.Combine(migrationsDir, "20260201120000_AddUsers.cs"), "// mig");
+    File.WriteAllText(Path.Combine(migrationsDir, "20260201120000_AddUsers.Designer.cs"), "// designer");
+    File.WriteAllText(Path.Combine(migrationsDir, "20260301120000_AddIndexes.cs"), "// mig");
+    File.WriteAllText(Path.Combine(migrationsDir, "20260301120000_AddIndexes.Designer.cs"), "// designer");
+    File.WriteAllText(Path.Combine(migrationsDir, "AppDbContextModelSnapshot.cs"), "// snapshot");
 
-    // A stray folder that is NOT a migration (no timestamp_<name> pattern).
-    Directory.CreateDirectory(Path.Combine(migrationsDir, "NotAMigration"));
-    // A non-migration timestamped folder WITHOUT .cs files (should be rejected).
-    Directory.CreateDirectory(Path.Combine(migrationsDir, "20260401120000_NoCsFiles"));
+    // A non-migration .cs file (no timestamp_<name> pattern) — should be excluded.
+    File.WriteAllText(Path.Combine(migrationsDir, "RandomFile.cs"), "// not a migration");
+    // A stray subdirectory (should be ignored — we scan files, not dirs).
+    Directory.CreateDirectory(Path.Combine(migrationsDir, "20260401120000_StrayDir"));
 
     var discovered = MigrationScriptGenerator.DiscoverMigrations(efRoot);
-    Check("discovers all 3 EF migrations", discovered.Count == 3);
+    Check("discovers all 3 EF migrations (files, not dirs)", discovered.Count == 3);
     Check("newest-first ordering (AddIndexes first)",
         discovered[0].Name == "20260301120000_AddIndexes");
     Check("second is AddUsers", discovered[1].Name == "20260201120000_AddUsers");
     Check("oldest is InitialCreate", discovered[2].Name == "20260101120000_InitialCreate");
     Check("DisplayName strips the timestamp prefix", discovered[0].DisplayName == "AddIndexes");
-    Check("stray non-migration folder excluded", !discovered.Any(m => m.Name == "NotAMigration"));
-    Check("timestamped folder without .cs excluded", !discovered.Any(m => m.Name == "20260401120000_NoCsFiles"));
+    Check(".Designer.cs files excluded", !discovered.Any(m => m.Name.EndsWith(".Designer")));
+    Check("ModelSnapshot.cs excluded", !discovered.Any(m => m.Name.Contains("ModelSnapshot")));
+    Check("non-migration .cs file excluded", !discovered.Any(m => m.Name == "RandomFile"));
+    Check("stray subdirectory ignored", !discovered.Any(m => m.Name == "20260401120000_StrayDir"));
 
     Check("missing project folder yields empty list",
         MigrationScriptGenerator.DiscoverMigrations(Path.Combine(workRoot, "missing")).Count == 0);
