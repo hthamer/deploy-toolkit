@@ -57,13 +57,48 @@ public sealed record MigrationScriptResult(
 public static class MigrationScriptGenerator
 {
     /// <summary>
-    /// Discovers EF Core migrations under <c>&lt;dbProjectFolder&gt;/Migrations</c>.
+    /// Resolves a project path (which may be a <c>.csproj</c> FILE or a
+    /// directory) to its containing directory. The EF-migrations UI dropdown
+    /// lists <c>.csproj</c> files (e.g.
+    /// <c>F:\...\XonetPlus_V4.Data\XonetPlus_V4.Data.csproj</c>), but
+    /// <see cref="DiscoverMigrations"/> and the process working directory need
+    /// the PROJECT FOLDER (the directory holding the <c>Migrations</c>
+    /// subfolder). Returns the input unchanged when it's already a directory;
+    /// returns its <c>Path.GetDirectoryName</c> when it's a <c>.csproj</c> file;
+    /// returns the input unchanged when it doesn't exist (the caller's
+    /// <c>Directory.Exists</c> check handles the missing case).
+    /// </summary>
+    public static string ResolveProjectDirectory(string projectPath)
+    {
+        if (string.IsNullOrWhiteSpace(projectPath))
+            return projectPath ?? string.Empty;
+
+        // A .csproj file → its containing directory is the project folder.
+        if (projectPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) && File.Exists(projectPath))
+            return Path.GetDirectoryName(projectPath)!;
+
+        // Already a directory → use as-is.
+        if (Directory.Exists(projectPath))
+            return projectPath;
+
+        // Doesn't exist as a file or dir — return as-is so the caller's
+        // existence check surfaces the clear error.
+        return projectPath;
+    }
+
+    /// <summary>
+    /// Discovers EF Core migrations under <c>&lt;projectDir&gt;/Migrations</c>.
     /// EF Core migrations are FILES (not subdirectories): each migration is a
     /// pair <c>&lt;timestamp&gt;_&lt;Name&gt;.cs</c> +
     /// <c>&lt;timestamp&gt;_&lt;Name&gt;.Designer.cs</c>, plus a single
     /// <c>&lt;DbContext&gt;ModelSnapshot.cs</c>. This method scans the .cs
     /// FILES in the Migrations folder and returns each migration, newest-first
     /// by timestamp (when present) or alphabetically (fallback).
+    ///
+    /// <paramref name="dbProjectFolder"/> may be a <c>.csproj</c> FILE path
+    /// (as selected in the UI dropdown) OR a project directory — the method
+    /// resolves it to the containing directory first via
+    /// <see cref="ResolveProjectDirectory"/>.
     ///
     /// <b>Matching is deliberately lenient</b> to handle real-world layouts:
     ///  - Standard EF Core: <c>&lt;14-digit-timestamp&gt;_&lt;Name&gt;.cs</c>
@@ -83,10 +118,17 @@ public static class MigrationScriptGenerator
     /// </summary>
     public static IReadOnlyList<EfMigration> DiscoverMigrations(string dbProjectFolder)
     {
-        if (string.IsNullOrWhiteSpace(dbProjectFolder) || !Directory.Exists(dbProjectFolder))
+        if (string.IsNullOrWhiteSpace(dbProjectFolder))
             return Array.Empty<EfMigration>();
 
-        var migrationsDir = Path.Combine(dbProjectFolder, "Migrations");
+        // Resolve a .csproj FILE path to its containing directory — the UI
+        // dropdown lists .csproj files, but the Migrations folder is a
+        // sibling of the .csproj, not inside it.
+        var projectDir = ResolveProjectDirectory(dbProjectFolder);
+        if (!Directory.Exists(projectDir))
+            return Array.Empty<EfMigration>();
+
+        var migrationsDir = Path.Combine(projectDir, "Migrations");
         if (!Directory.Exists(migrationsDir))
             return Array.Empty<EfMigration>();
 
@@ -196,7 +238,15 @@ public static class MigrationScriptGenerator
             "ef-migrations", $"{Guid.NewGuid():N}.sql");
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
 
+        // The --project arg accepts a .csproj file path OR a directory (dotnet
+        // ef handles both), so pass the original path. But the process WORKING
+        // DIRECTORY must be a directory (a file path there throws), so resolve
+        // it. This is the fix for the "selecting a .csproj file → empty
+        // migrations" bug: the UI dropdown lists .csproj files, not folders.
         var arguments = BuildArguments(dbProjectFolder, outputFile, fromMigration, toMigration, idempotent);
+        var workingDir = ResolveProjectDirectory(dbProjectFolder);
+        if (!Directory.Exists(workingDir))
+            workingDir = Environment.CurrentDirectory; // fallback — never crash on a bad path
 
         var psi = new ProcessStartInfo
         {
@@ -208,7 +258,7 @@ public static class MigrationScriptGenerator
             CreateNoWindow = true,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
-            WorkingDirectory = dbProjectFolder,
+            WorkingDirectory = workingDir,
         };
 
         using var process = new Process { StartInfo = psi };

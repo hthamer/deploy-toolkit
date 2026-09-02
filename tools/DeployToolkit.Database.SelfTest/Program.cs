@@ -339,6 +339,29 @@ try
         MigrationScriptGenerator.DiscoverMigrations(workRoot).Count == 0);
 
     // ---------------------------------------------------------------
+    Console.WriteLine("== ResolveProjectDirectory (.csproj file → containing dir) ==");
+    // The UI dropdown lists .csproj FILES, but DiscoverMigrations needs the
+    // project FOLDER (the dir holding Migrations/). This is the fix for the
+    // "selecting a .csproj → empty migrations" bug: Directory.Exists(.csproj)
+    // is false (it's a file), so the old check returned empty immediately.
+    var csprojPath = Path.Combine(efRoot, "XonetPlus_V4.Data.csproj");
+    File.WriteAllText(csprojPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+    Check("ResolveProjectDirectory: .csproj file → its containing directory",
+        MigrationScriptGenerator.ResolveProjectDirectory(csprojPath) == efRoot);
+    Check("ResolveProjectDirectory: a directory → unchanged",
+        MigrationScriptGenerator.ResolveProjectDirectory(efRoot) == efRoot);
+    Check("ResolveProjectDirectory: null/empty → empty",
+        MigrationScriptGenerator.ResolveProjectDirectory(null!) == string.Empty
+        && MigrationScriptGenerator.ResolveProjectDirectory("") == string.Empty);
+
+    // The exact user scenario: DiscoverMigrations with a .csproj FILE path
+    // must find the migrations in the sibling Migrations/ folder.
+    var discoveredFromCsproj = MigrationScriptGenerator.DiscoverMigrations(csprojPath);
+    Check("DiscoverMigrations accepts a .csproj file path (finds migrations)",
+        discoveredFromCsproj.Count == 4 // 3 timestamped + 1 fallback (CustomMigration)
+        && discoveredFromCsproj[0].Name == "20260301120000_AddIndexes");
+
+    // ---------------------------------------------------------------
     Console.WriteLine("== MigrationScriptGenerator.BuildArguments (dotnet ef script command) ==");
     var args1 = MigrationScriptGenerator.BuildArguments(
         @"C:\repo\DB Project", @"C:\out\script.sql", fromMigration: null, toMigration: null);
