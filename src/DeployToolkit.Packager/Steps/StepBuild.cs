@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using DeployToolkit.AppKit;
+using DeployToolkit.Core.Database;
+using DeployToolkit.Core.Manifest;
 using DeployToolkit.Core.Packaging;
 using DeployToolkit.Core.Publishing;
 using DeployToolkit.Core.Registry;
@@ -19,6 +21,7 @@ internal sealed class StepBuild : WizardStep
     private readonly Button _buildButton;
     private readonly Label _resultLabel;
     private readonly Label _staleLabel;
+    private readonly Label _localPathWarningLabel;
     private readonly Button _openFolderButton;
     private readonly Button _copyPathButton;
 
@@ -51,6 +54,22 @@ internal sealed class StepBuild : WizardStep
         zipRow.Controls.Add(_zipPathBox, 0, 0);
         zipRow.Controls.Add(browseButton, 1, 0);
         layout.Controls.Add(zipRow);
+
+        // Warning shown when the output path is a LOCAL folder (not under the
+        // shared package store). The local copy won't be visible to other team
+        // members — only the shared-store upload (Option B, if configured) is.
+        // Hidden when the store isn't configured (local-only is the only option)
+        // or when the path IS under the store.
+        _localPathWarningLabel = new Label
+        {
+            Text = string.Empty,
+            AutoSize = false,
+            Height = 40,
+            Dock = DockStyle.Fill,
+            ForeColor = Color.DarkOrange,
+            Visible = false,
+        };
+        layout.Controls.Add(_localPathWarningLabel);
 
         var actionRow = new FlowLayoutPanel
         {
@@ -132,6 +151,7 @@ internal sealed class StepBuild : WizardStep
         }
 
         _zipPathBox.Text = Draft.OutputZipPath ?? DefaultZipPath();
+        UpdateLocalPathWarning();
         Wizard.OnDraftChanged();
     }
 
@@ -167,6 +187,16 @@ internal sealed class StepBuild : WizardStep
         if (_deltaCommit is { } commit)
             commit();
 
+        // #3/#4 EF migrations: generate the SQL script from the selected
+        // migrations NOW (before BuildAsync) and attach it as a Schema
+        // DbScript. PackageBuilder is in Core (no Database dependency), so
+        // the script generation happens here in the UI layer; BuildAsync only
+        // records the AppliedMigrations set on the manifest. Best-effort: a
+        // generation failure (dotnet-ef missing, build error) is surfaced as
+        // a build-blocking error so the user fixes it before the package is
+        // shipped with a missing migration script.
+        await GenerateEfMigrationScriptAsync();
+
         var request = new PackageBuildRequest(
             component.ComponentId,
             version,
@@ -176,7 +206,10 @@ internal sealed class StepBuild : WizardStep
             AppSettingsDelta: Draft.AppSettingsDelta.Count == 0 ? null : Draft.AppSettingsDelta,
             DbScripts: Draft.DbScripts.Count == 0 ? null : Draft.DbScripts,
             DbScriptSourcePaths: Draft.DbScriptSourcePaths.Count == 0 ? null : Draft.DbScriptSourcePaths,
-            ExcludedPaths: Draft.ExcludedPaths.Count == 0 ? null : Draft.ExcludedPaths);
+            ExcludedPaths: Draft.ExcludedPaths.Count == 0 ? null : Draft.ExcludedPaths,
+            EfMigrationsProjectPath: Draft.EfMigrationsProjectPath,
+            SelectedEfMigrations: Draft.SelectedEfMigrations.Count == 0 ? null : Draft.SelectedEfMigrations,
+            PreviouslyAppliedMigrations: Draft.PreviouslyAppliedMigrations.Count == 0 ? null : Draft.PreviouslyAppliedMigrations);
 
         PackageBuildResult? result = null;
         await Guard.RunAsync(Wizard, "Building package…", async cancellationToken =>
@@ -248,6 +281,87 @@ internal sealed class StepBuild : WizardStep
         // from the values the user actually used this time. Failures are
         // non-fatal — a registry write error must not undo a successful build.
         _ = SyncRegistryFromSessionAsync();
+    }
+
+    /// <summary>
+    /// #3/#4 EF migrations: generates the SQL script for the migrations the
+    /// user selected in the DB-scripts step and attaches it as a Schema
+    /// DbScript. Uses <c>dotnet ef migrations script --idempotent</c> from the
+    /// last-applied migration (by timestamp) to the last-selected migration
+    /// (by timestamp), so already-applied migrations in the range are skipped
+    /// on the DB (handles the "migrations in the middle added later" case).
+    /// A generation failure blocks the build (the user must fix dotnet-ef /
+    /// the build before shipping a package with a missing migration script).
+    /// No-op when no EF project is selected or no migrations are checked.
+    /// </summary>
+    private async Task GenerateEfMigrationScriptAsync()
+    {
+        if (string.IsNullOrEmpty(Draft.EfMigrationsProjectPath) || Draft.SelectedEfMigrations.Count == 0)
+            return;
+
+        var projectPath = Draft.EfMigrationsProjectPath!;
+        var selected = Draft.SelectedEfMigrations;
+
+        // Discover the project's migrations (ordered newest-first by timestamp)
+        // to compute the --from (last applied by timestamp) and --to (last
+        // selected by timestamp) for the dotnet ef script command.
+        var allMigrations = await Task.Run(() => MigrationScriptGenerator.DiscoverMigrations(projectPath));
+        if (allMigrations.Count == 0)
+        {
+            AppTheme.Error(this, "No EF migrations found in the selected DB project.");
+            return;
+        }
+
+        // Migrations are newest-first; the "from" is the newest migration that
+        // is in the PREVIOUSLY-APPLIED set (the last applied by timestamp);
+        // the "to" is the newest migration that is in the SELECTED set.
+        var applied = Draft.PreviouslyAppliedMigrations;
+        var fromMigration = allMigrations.FirstOrDefault(m => applied.Contains(m.Name));
+        var toMigration = allMigrations.FirstOrDefault(m => selected.Contains(m.Name));
+
+        if (toMigration is null)
+        {
+            AppTheme.Error(this, "The selected EF migration was not found in the project. " +
+                "The Migrations folder may have changed since the DB-scripts step — go back and re-select.");
+            return;
+        }
+
+        // Generate the script with --idempotent so re-running on a DB that
+        // already has some migrations applied is safe.
+        MigrationScriptResult? result = null;
+        await Guard.RunAsync(Wizard, "Generating EF migration script…", async () =>
+        {
+            result = await MigrationScriptGenerator.GenerateScriptAsync(
+                projectPath,
+                fromMigration: fromMigration?.Name,
+                toMigration: toMigration.Name,
+                timeoutMinutes: 5,
+                idempotent: true);
+        });
+
+        if (result is null || !result.Success)
+        {
+            throw new InvalidOperationException(
+                $"EF migration script generation failed (exit {result?.ExitCode ?? -1}): " +
+                $"{result?.ErrorSummary ?? "unknown error"}. " +
+                "Make sure 'dotnet-ef' is installed (dotnet tool install --global dotnet-ef) " +
+                "and the DB project builds.");
+        }
+
+        // Write the generated script to a temp file + attach as a Schema
+        // DbScript (EF migrations are schema changes). Re-attaching the same
+        // script name across rebuilds replaces the previous temp file's
+        // source path (a rebuild regenerates the script with the latest set).
+        var scriptName = "ef-migrations.sql";
+        var tempPath = Path.Combine(Path.GetTempPath(), "DeployToolkit", "ef-migrations", $"{Guid.NewGuid():N}_{scriptName}");
+        Directory.CreateDirectory(Path.GetDirectoryName(tempPath)!);
+        await File.WriteAllTextAsync(tempPath, result.ScriptText);
+        Draft.DbScriptSourcePaths[scriptName] = tempPath;
+
+        // Ensure it's in the DbScripts list (replace if a previous build
+        // already added it).
+        Draft.DbScripts.RemoveAll(s => s.File == scriptName);
+        Draft.DbScripts.Add(new DbScriptRef(scriptName, DbScriptKind.Schema));
     }
 
     /// <summary>
@@ -353,6 +467,48 @@ internal sealed class StepBuild : WizardStep
         {
             _zipPathBox.Text = picker.FileName;
             Draft.OutputZipPath = picker.FileName;
+            UpdateLocalPathWarning();
+        }
+    }
+
+    /// <summary>Shows the "local folder" warning when the output path is NOT
+    /// under the shared package store (so the user knows the local copy won't
+    /// be visible to other team members). Hidden when no store is configured
+    /// (local-only is the only option) or when the path is under the store
+    /// root. The shared-store upload (if configured) still happens at build
+    /// time regardless of the local path — the warning is about the LOCAL
+    /// copy's visibility, not the build outcome.</summary>
+    private void UpdateLocalPathWarning()
+    {
+        var storeRoot = Wizard.PackageStoreRootPath;
+        if (string.IsNullOrWhiteSpace(storeRoot))
+        {
+            _localPathWarningLabel.Visible = false;
+            return;
+        }
+
+        var path = _zipPathBox.Text.Trim();
+        if (path.Length == 0)
+        {
+            _localPathWarningLabel.Visible = false;
+            return;
+        }
+
+        // Normalize both sides for the prefix check (case-insensitive on
+        // Windows). A path under the store root = no warning; anywhere else
+        // = warn that the local copy won't be shared.
+        var dir = Path.GetDirectoryName(path) ?? path;
+        var underStore = dir.StartsWith(storeRoot.Trim(), StringComparison.OrdinalIgnoreCase);
+        if (underStore)
+        {
+            _localPathWarningLabel.Visible = false;
+        }
+        else
+        {
+            _localPathWarningLabel.Text =
+                "Note: this local folder will not be shared and is not visible to other team members. " +
+                "The package will still be uploaded to the shared store on build — other developers fetch it from there via the Deployer.";
+            _localPathWarningLabel.Visible = true;
         }
     }
 

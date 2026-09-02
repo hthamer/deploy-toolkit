@@ -50,7 +50,7 @@ internal sealed class StepDiff : WizardStep
         {
             Text = string.Empty,
             AutoSize = false,
-            Height = 40,
+            Height = 22,
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };
@@ -115,7 +115,7 @@ internal sealed class StepDiff : WizardStep
                    "connectionstrings.json, secrets.json) are always excluded and locked — they " +
                    "are never published to avoid overwriting production secrets.",
             AutoSize = false,
-            Height = 52,
+            Height = 40,
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };

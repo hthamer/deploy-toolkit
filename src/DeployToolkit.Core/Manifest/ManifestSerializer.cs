@@ -25,6 +25,7 @@ internal sealed class ManifestDto
     public Dictionary<string, object?> AppSettingsDelta { get; set; } = new();
     public List<DbScriptDto> DbScripts { get; set; } = new();
     public string? HealthCheckUrl { get; set; }
+    public List<string> AppliedMigrations { get; set; } = new();
 
     public sealed class FileDto
     {
@@ -72,6 +73,7 @@ public static class ManifestSerializer
                 .Select(s => new ManifestDto.DbScriptDto { File = s.File, Kind = s.Kind })
                 .ToList(),
             HealthCheckUrl = manifest.HealthCheckUrl,
+            AppliedMigrations = manifest.AppliedMigrations.ToList(),
         };
 
         return JsonSerializer.Serialize(dto, Options);
@@ -98,6 +100,7 @@ public static class ManifestSerializer
             AppSettingsDelta = dto.AppSettingsDelta,
             DbScripts = dto.DbScripts.Select(s => new DbScriptRef(s.File, s.Kind)).ToList(),
             HealthCheckUrl = dto.HealthCheckUrl,
+            AppliedMigrations = dto.AppliedMigrations,
         };
     }
 }

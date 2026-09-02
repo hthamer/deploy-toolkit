@@ -351,6 +351,14 @@ try
     catch (ArgumentException) { argEx2 = true; }
     Check("empty output file throws ArgumentException", argEx2);
 
+    // Idempotent flag adds --idempotent so the script is safe to re-run on a DB
+    // that already has some migrations applied (handles the "migrations in the
+    // middle added later" case).
+    var args3 = MigrationScriptGenerator.BuildArguments(
+        @"C:\repo\DB", @"C:\out\script.sql", "20260101_Initial", "20260301_AddIndexes", idempotent: true);
+    Check("idempotent flag adds --idempotent before --no-build",
+        args3.Contains("--idempotent") && args3.EndsWith("--no-build"));
+
     Console.WriteLine();
     Console.WriteLine("Note: SqlServerScriptRunner connection-string path is compile-verified only");
     Console.WriteLine("      (no SQL Server / Azure SQL available in this sandbox). All runner");

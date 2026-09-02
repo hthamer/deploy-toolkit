@@ -126,6 +126,15 @@ public sealed class PackagerWizardForm : Form, IGuardedCloseScreen
     /// <summary>The package builder (folder mapping, stale checks, builds).</summary>
     public PackageBuilder Builder { get; }
 
+    /// <summary>
+    /// The shared package-store root path (Option B), or null when no store is
+    /// configured. Set by the shell when opening the wizard so StepBuild can
+    /// warn the user when they pick a local output folder (the local copy
+    /// won't be visible to other team members — only the shared-store upload
+    /// is). Read-only from the steps' perspective.
+    /// </summary>
+    public string? PackageStoreRootPath { get; init; }
+
     /// <summary>State accumulated across the steps (internal — only the
     /// wizard and its steps, all in this assembly, touch the draft).</summary>
     internal PackageDraft Draft { get; }

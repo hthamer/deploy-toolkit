@@ -96,6 +96,7 @@ try
             ["Feature:NewToggle"] = true,
         },
         HealthCheckUrl = "https://clienta.example.com/health",
+        AppliedMigrations = new[] { "20260101_Initial", "20260201_AddUsers" },
     };
 
     var zipPath = Path.Combine(workRoot, "delta.zip");
@@ -106,6 +107,10 @@ try
     Check("manifest round-trips: version", readBack.Version == "1.4.0");
     Check("manifest round-trips: file count", readBack.Files.Count == diff.ChangedOrNewFiles.Count);
     Check("manifest round-trips: appsettings delta", readBack.AppSettingsDelta["Smtp:Host"]?.ToString() == "smtp.newhost.com");
+    Check("manifest round-trips: AppliedMigrations",
+        readBack.AppliedMigrations.Count == 2
+        && readBack.AppliedMigrations.Contains("20260101_Initial")
+        && readBack.AppliedMigrations.Contains("20260201_AddUsers"));
 
     var integrity = PackageReader.VerifyIntegrity(zipPath);
     Check("integrity check passes on an untampered package", integrity.IsValid);
@@ -1366,6 +1371,44 @@ try
     Check("PackageLocation points at an existing file in the store", File.Exists(withStoreResult.Record.PackageLocation!));
     Check("PackageLocation is under the store root", withStoreResult.Record.PackageLocation!.StartsWith(Path.Combine(workRoot, "location-store")));
     Check("builder with store has no PackageStoreError on success", withStoreResult.PackageStoreError is null);
+
+    // ---------------------------------------------------------------
+    Console.WriteLine("== PackageBuilder AppliedMigrations (EF migration tracking) ==");
+    // Build with no previously-applied + 2 selected → manifest has exactly those 2.
+    var migResult1 = await builderNoStore.BuildAsync(new PackageBuildRequest(
+        locComponent.ComponentId, "2.0.0", locPublish, Path.Combine(workRoot, "mig1.zip"),
+        SelectedEfMigrations: new[] { "20260201_AddUsers", "20260301_AddIndexes" },
+        PreviouslyAppliedMigrations: Array.Empty<string>()));
+    Check("AppliedMigrations = selected when previously empty",
+        migResult1.Manifest.AppliedMigrations.Count == 2
+        && migResult1.Manifest.AppliedMigrations.Contains("20260201_AddUsers")
+        && migResult1.Manifest.AppliedMigrations.Contains("20260301_AddIndexes"));
+
+    // Build with previously-applied = {A, B} + selected = {C} → manifest = {A, B, C}.
+    var migResult2 = await builderNoStore.BuildAsync(new PackageBuildRequest(
+        locComponent.ComponentId, "2.1.0", locPublish, Path.Combine(workRoot, "mig2.zip"),
+        SelectedEfMigrations: new[] { "20260401_AddTables" },
+        PreviouslyAppliedMigrations: new[] { "20260201_AddUsers", "20260301_AddIndexes" }));
+    Check("AppliedMigrations = previously applied ∪ selected",
+        migResult2.Manifest.AppliedMigrations.Count == 3
+        && migResult2.Manifest.AppliedMigrations.Contains("20260201_AddUsers")
+        && migResult2.Manifest.AppliedMigrations.Contains("20260301_AddIndexes")
+        && migResult2.Manifest.AppliedMigrations.Contains("20260401_AddTables"));
+
+    // Build with previously-applied = {A, B, C} + selected = empty → manifest = {A, B, C} (cumulative, not a delta).
+    var migResult3 = await builderNoStore.BuildAsync(new PackageBuildRequest(
+        locComponent.ComponentId, "2.2.0", locPublish, Path.Combine(workRoot, "mig3.zip"),
+        SelectedEfMigrations: Array.Empty<string>(),
+        PreviouslyAppliedMigrations: new[] { "20260201_AddUsers", "20260301_AddIndexes", "20260401_AddTables" }));
+    Check("AppliedMigrations preserved when no new migrations selected",
+        migResult3.Manifest.AppliedMigrations.Count == 3);
+
+    // AppliedMigrations survives a manifest serialize → deserialize round-trip.
+    var migSerialized = ManifestSerializer.Serialize(migResult2.Manifest);
+    var migDeserialized = ManifestSerializer.Deserialize(migSerialized);
+    Check("AppliedMigrations round-trips through serialize/deserialize",
+        migDeserialized.AppliedMigrations.Count == 3
+        && migDeserialized.AppliedMigrations.Contains("20260401_AddTables"));
 
     // ---------------------------------------------------------------
     Console.WriteLine("== ProjectTargetFrameworkReader (publish framework auto-detect) ==");

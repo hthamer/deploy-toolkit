@@ -30,7 +30,29 @@ public sealed record PackageBuildRequest(
     /// Paths (relative, forward-slash) to leave out of the delta — the
     /// Packager diff-preview grid's manual exclude option.
     /// </summary>
-    IReadOnlyCollection<string>? ExcludedPaths = null);
+    IReadOnlyCollection<string>? ExcludedPaths = null,
+    /// <summary>
+    /// EF migrations (user request #3/#4): the database project folder the
+    /// user picked to generate migration scripts from. Null when no EF
+    /// migration project is selected. Different from the web project — the
+    /// DB project is usually a sibling class library.
+    /// </summary>
+    string? EfMigrationsProjectPath = null,
+    /// <summary>
+    /// EF migrations: the migration NAMES the user selected to include (the
+    /// checkboxes in the DB-scripts step's EF-migrations grid). Empty when
+    /// none are selected. Used to generate the SQL script + record
+    /// <see cref="ComponentManifest.AppliedMigrations"/>.
+    /// </summary>
+    IReadOnlyCollection<string>? SelectedEfMigrations = null,
+    /// <summary>
+    /// EF migrations: the set of migration NAMES already applied (deployed)
+    /// as of the last DEPLOYED package — fetched from the baseline
+    /// manifest's <see cref="ComponentManifest.AppliedMigrations"/>. The new
+    /// manifest's AppliedMigrations = this set ∪ <see cref="SelectedEfMigrations"/>.
+    /// Empty on the first package (no baseline).
+    /// </summary>
+    IReadOnlyCollection<string>? PreviouslyAppliedMigrations = null);
 
 public sealed record PackageBuildResult(
     ComponentManifest Manifest,
@@ -203,6 +225,12 @@ public sealed class PackageBuilder
             AppSettingsDelta = request.AppSettingsDelta ?? new Dictionary<string, object?>(),
             DbScripts = request.DbScripts ?? Array.Empty<DbScriptRef>(),
             HealthCheckUrl = component.HealthCheckUrl,
+            // EF migrations (user request #3/#4): the new manifest's
+            // AppliedMigrations = previously applied (from the baseline
+            // manifest) ∪ the migrations the user selected this build. Always
+            // the full cumulative set — the manifest is the audit record.
+            AppliedMigrations = ComputeAppliedMigrations(
+                request.PreviouslyAppliedMigrations, request.SelectedEfMigrations),
         };
 
         PackageWriter.Write(
@@ -247,6 +275,22 @@ public sealed class PackageBuilder
         if (packageStoreError is not null)
             buildResult = buildResult with { PackageStoreError = packageStoreError };
         return buildResult;
+    }
+
+    /// <summary>EF migrations: the new manifest's AppliedMigrations = the
+    /// previously applied set (from the baseline manifest) ∪ the migrations
+    /// selected this build. Returns a sorted list (deterministic order in the
+    /// serialized manifest). Null/empty inputs are tolerated.</summary>
+    private static IReadOnlyList<string> ComputeAppliedMigrations(
+        IReadOnlyCollection<string>? previouslyApplied,
+        IReadOnlyCollection<string>? selected)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (previouslyApplied is not null)
+            foreach (var m in previouslyApplied) set.Add(m);
+        if (selected is not null)
+            foreach (var m in selected) set.Add(m);
+        return set.OrderBy(m => m, StringComparer.Ordinal).ToList();
     }
 
     /// <summary>

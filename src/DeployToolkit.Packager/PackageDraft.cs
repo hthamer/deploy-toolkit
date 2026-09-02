@@ -49,6 +49,33 @@ internal sealed class PackageDraft
     /// <summary>Step 5: maps each script file name to its full source path on disk.</summary>
     public Dictionary<string, string> DbScriptSourcePaths { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Step 5 (EF migrations): the database project (.csproj folder) the user
+    /// picked to generate migration scripts from. Null until the user selects
+    /// one in the DB-scripts step. Different from the web project in
+    /// <see cref="FolderPath"/> — the DB project is usually a sibling class
+    /// library, not a web app.
+    /// </summary>
+    public string? EfMigrationsProjectPath { get; set; }
+
+    /// <summary>
+    /// Step 5 (EF migrations): the migration NAMES the user selected to
+    /// include in this package (checkboxes in the EF-migrations grid). Empty
+    /// when no migrations are selected. Set by StepScripts from the grid;
+    /// read by PackageBuilder to generate the script and record
+    /// <see cref="ManifestModels.ComponentManifest.AppliedMigrations"/>.
+    /// </summary>
+    public HashSet<string> SelectedEfMigrations { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Step 5 (EF migrations): the set of migration NAMES that were already
+    /// applied (deployed) as of the last DEPLOYED package — fetched from the
+    /// baseline manifest's <see cref="ManifestModels.ComponentManifest.AppliedMigrations"/>
+    /// on entry to the DB-scripts step. Used to auto-check only the
+    /// not-yet-applied migrations. Empty on the first package (no baseline).
+    /// </summary>
+    public HashSet<string> PreviouslyAppliedMigrations { get; set; } = new(StringComparer.Ordinal);
+
     /// <summary>Step 6: where the finished delta.zip is written.</summary>
     public string? OutputZipPath { get; set; }
 
@@ -73,6 +100,9 @@ internal sealed class PackageDraft
         AppSettingsDelta = new Dictionary<string, object?>();
         DbScripts.Clear();
         DbScriptSourcePaths.Clear();
+        EfMigrationsProjectPath = null;
+        SelectedEfMigrations.Clear();
+        PreviouslyAppliedMigrations = new HashSet<string>(StringComparer.Ordinal);
         OutputZipPath = null;
         BuildResult = null;
     }

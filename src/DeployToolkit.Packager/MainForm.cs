@@ -456,7 +456,10 @@ public sealed class MainForm : Form
             {
                 if (_store is null || _builder is null)
                     return;
-                var wizard = new PackagerWizardForm(_store, _builder);
+                var wizard = new PackagerWizardForm(_store, _builder)
+                {
+                    PackageStoreRootPath = _settings.PackageStoreRootPath,
+                };
                 _wizardScreen = wizard;
                 screen = wizard;
                 break;

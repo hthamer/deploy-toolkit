@@ -62,6 +62,24 @@ public sealed class ComponentManifest
     public string? HealthCheckUrl { get; init; }
 
     /// <summary>
+    /// The set of EF Core migration NAMES that have been applied (deployed) to
+    /// the target database as of this package — the cumulative set, tracked
+    /// across packages so the next build knows exactly which migrations are
+    /// still pending (user request: "track the deployed migrations in the
+    /// manifest; for new packages retrieve only the migrations that are not
+    /// applied — don't rely on first-to-last, as there may be some migrations
+    /// in the middle that are added later which are not deployed").
+    /// <para>
+    /// A migration is "pending" (auto-checked in the DB-scripts step) when its
+    /// name is NOT in this set. The new package's
+    /// <see cref="AppliedMigrations"/> = the previous set ∪ the migrations
+    /// the user selected this build. Never serialized as a delta — always the
+    /// full cumulative set (the manifest is the audit record).
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> AppliedMigrations { get; init; } = Array.Empty<string>();
+
+    /// <summary>
     /// Not part of the on-disk JSON — tracked separately in the registry, but
     /// convenient to carry alongside an in-memory manifest instance.
     /// </summary>

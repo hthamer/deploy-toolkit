@@ -108,8 +108,15 @@ public static class MigrationScriptGenerator
     /// <c>dotnet ef</c> writes progress/info to stdout and the script to the
     /// output file — capturing stdout would interleave them. The caller reads
     /// the output file after the process exits.
+    /// <para>
+    /// When <paramref name="idempotent"/> is true, adds <c>--idempotent</c> so
+    /// the generated script guards each migration with <c>IF NOT EXISTS</c>
+    /// checks against <c>__EFMigrationsHistory</c> — safe to re-run on a DB
+    /// that already has some of the migrations applied (handles the
+    /// "migrations in the middle added later" case without erroring).
+    /// </para>
     /// </summary>
-    public static string BuildArguments(string dbProjectFolder, string outputFile, string? fromMigration, string? toMigration)
+    public static string BuildArguments(string dbProjectFolder, string outputFile, string? fromMigration, string? toMigration, bool idempotent = false)
     {
         if (string.IsNullOrWhiteSpace(dbProjectFolder))
             throw new ArgumentException("dbProjectFolder is required.", nameof(dbProjectFolder));
@@ -123,6 +130,8 @@ public static class MigrationScriptGenerator
             sb.Append(' ').Append(toMigration);
         sb.Append(" --project ").Append(Quote(dbProjectFolder));
         sb.Append(" --output ").Append(Quote(outputFile));
+        if (idempotent)
+            sb.Append(" --idempotent");
         sb.Append(" --no-build"); // the publish step already built the project; skip the redundant rebuild
         return sb.ToString();
     }
@@ -144,6 +153,7 @@ public static class MigrationScriptGenerator
         string? toMigration = null,
         Action<string>? onOutputLine = null,
         int timeoutMinutes = 5,
+        bool idempotent = false,
         CancellationToken cancellationToken = default)
     {
         var dotnet = DeployToolkit.Core.Publishing.DotNetPublisher.ResolveDotNetExecutable()
@@ -155,7 +165,7 @@ public static class MigrationScriptGenerator
             "ef-migrations", $"{Guid.NewGuid():N}.sql");
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
 
-        var arguments = BuildArguments(dbProjectFolder, outputFile, fromMigration, toMigration);
+        var arguments = BuildArguments(dbProjectFolder, outputFile, fromMigration, toMigration, idempotent);
 
         var psi = new ProcessStartInfo
         {

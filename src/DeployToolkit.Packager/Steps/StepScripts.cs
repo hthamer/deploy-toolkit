@@ -1,28 +1,49 @@
 using DeployToolkit.AppKit;
+using DeployToolkit.Core.Database;
 using DeployToolkit.Core.Manifest;
 
 namespace DeployToolkit.Packager.Steps;
 
 /// <summary>
-/// Step 5 (plan §10 step 6): attach .sql scripts and tag each as Schema or
-/// Data (<see cref="DbScriptKind"/>). Scripts are embedded into the package
-/// under db/ and run by the Deployer after an explicit confirm — transaction
-/// safety is analyzed there (DeployToolkit.Core.Database).
+/// Step 5 (plan §10 step 6): two grids — EF migrations and external .sql
+/// files. Both are embedded into the package under db/ and run by the
+/// Deployer after an explicit confirm.
 ///
-/// <b>EF migrations generation (user request #2)</b>: a "Generate from EF
-/// migrations…" button opens <see cref="MigrationScriptDialog"/> — the user
-/// picks a sibling database project (different folder than the web project),
-/// the dialog discovers its <c>Migrations</c> folder, and runs
-/// <c>dotnet ef migrations script</c> to produce the SQL. The generated
-/// script is written to a temp file and attached to the grid just like a
-/// manually-added .sql file — the user can then edit/remove it and add more
-/// scripts on top.
+/// <b>EF migrations grid (user request #3/#4)</b>:
+/// <list type="number">
+///  <item>A project dropdown lists ALL .csproj files found under the
+///   folder picked in step 1 (Folder &amp; component) — NOT filtered to web
+///   apps, because the DB project is usually a class library. Similar to the
+///   publish step's project dropdown, but unfiltered.</item>
+///  <item>After selecting a project, the grid auto-populates with the
+///   migrations discovered in its Migrations folder (newest-first). Each row
+///   has a checkbox; rows NOT in the previous package's
+///   <see cref="ComponentManifest.AppliedMigrations"/> are auto-CHECKED
+///   (they're the pending ones); already-applied migrations are auto-UNCHECKED
+///   and shown as "applied". This is the tracking the user asked for: "retrieve
+///   only the migrations that are not applied (don't rely on first-to-last,
+///   as there may be some migrations in the middle that are added later
+///   which are not deployed)".</item>
+///  <item>At build time (StepBuild), the selected migrations generate a SQL
+///   script via <c>dotnet ef migrations script --idempotent</c> and are
+///   attached as a Schema DbScript. The new manifest's
+///   <see cref="ComponentManifest.AppliedMigrations"/> = previously applied
+///   ∪ selected — tracked so the next build knows exactly what's pending.</item>
+/// </list>
+///
+/// <b>External .sql grid</b>: the existing manual attachment flow (Add
+/// .sql files…, Kind dropdown, Remove). Unchanged from before.
 /// </summary>
 internal sealed class StepScripts : WizardStep
 {
-    private readonly DataGridView _grid;
+    private readonly ComboBox _efProjectBox;
+    private readonly DataGridView _efMigrationsGrid;
+    private readonly Label _efHintLabel;
+    private readonly DataGridView _sqlGrid;
     private readonly Label _countLabel;
-    private bool _loadingRows;
+    private bool _loadingEfGrid;
+    private bool _loadingSqlGrid;
+    private IReadOnlyList<EfMigration> _efMigrations = Array.Empty<EfMigration>();
 
     public StepScripts(PackagerWizardForm wizard, PackageDraft draft)
         : base(wizard, draft)
@@ -32,38 +53,83 @@ internal sealed class StepScripts : WizardStep
             Dock = DockStyle.Fill,
             ColumnCount = 1,
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // EF section label
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // EF project dropdown
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45)); // EF migrations grid
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // EF hint
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // External section label + button
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 55)); // External .sql grid
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // count label + note
 
-        var buttons = new FlowLayoutPanel
+        // ============== EF migrations section ==============
+        layout.Controls.Add(AppTheme.MakeSectionLabel("EF migrations (auto-tracked)"));
+
+        var efProjectRow = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill };
+        efProjectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+        efProjectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        efProjectRow.Controls.Add(new Label { Text = "DB project:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(2, 6, 8, 2) }, 0, 0);
+        _efProjectBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+        _efProjectBox.SelectedIndexChanged += (_, _) => _ = OnEfProjectSelectedAsync();
+        efProjectRow.Controls.Add(_efProjectBox, 1, 0);
+        layout.Controls.Add(efProjectRow);
+
+        _efMigrationsGrid = new DataGridView { Dock = DockStyle.Fill, AllowUserToAddRows = false };
+        AppTheme.StyleGrid(_efMigrationsGrid, readOnly: false);
+        _efMigrationsGrid.Columns.Add(new DataGridViewCheckBoxColumn
         {
-            FlowDirection = FlowDirection.LeftToRight,
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(0, 0, 0, 6),
-            WrapContents = false,
+            Name = "Include",
+            HeaderText = "Include",
+            Width = 60,
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+        _efMigrationsGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Migration",
+            HeaderText = "Migration",
+            ReadOnly = true,
+            FillWeight = 60,
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+        _efMigrationsGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Status",
+            HeaderText = "Status",
+            ReadOnly = true,
+            FillWeight = 40,
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+        _efMigrationsGrid.CellValueChanged += (_, e) => OnEfCheckboxChanged(e);
+        _efMigrationsGrid.CurrentCellDirtyStateChanged += (_, _) =>
+        {
+            if (_efMigrationsGrid.IsCurrentCellDirty)
+                _efMigrationsGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
         };
+        layout.Controls.Add(_efMigrationsGrid);
+
+        _efHintLabel = new Label
+        {
+            Text = string.Empty,
+            AutoSize = false,
+            Height = 36,
+            Dock = DockStyle.Fill,
+            ForeColor = Color.DimGray,
+        };
+        layout.Controls.Add(_efHintLabel);
+
+        // ============== External .sql section ==============
+        var externalHeaderRow = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill };
+        externalHeaderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        externalHeaderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        externalHeaderRow.Controls.Add(AppTheme.MakeSectionLabel("External / manual .sql files"), 0, 0);
         var addButton = new Button { Text = "Add .sql files…" };
         AppTheme.StyleButton(addButton);
         addButton.Click += (_, _) => AddScripts();
-        buttons.Controls.Add(addButton);
+        externalHeaderRow.Controls.Add(addButton, 1, 0);
+        layout.Controls.Add(externalHeaderRow);
 
-        // #2: Generate from EF migrations — pick a sibling DB project, the
-        // dialog discovers its Migrations folder and runs
-        // 'dotnet ef migrations script' to produce the SQL, which is then
-        // attached to the grid (editable like a manual .sql file).
-        var generateButton = new Button { Text = "Generate from EF migrations…" };
-        AppTheme.StyleButton(generateButton);
-        generateButton.Click += (_, _) => GenerateFromEfMigrations();
-        buttons.Controls.Add(generateButton);
-
-        layout.Controls.Add(buttons);
-
-        _grid = new DataGridView { Dock = DockStyle.Fill };
-        AppTheme.StyleGrid(_grid, readOnly: false);
-        _grid.Columns.Add(new DataGridViewTextBoxColumn
+        _sqlGrid = new DataGridView { Dock = DockStyle.Fill, AllowUserToAddRows = false };
+        AppTheme.StyleGrid(_sqlGrid, readOnly: false);
+        _sqlGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
             Name = "File",
             HeaderText = "File",
@@ -71,7 +137,7 @@ internal sealed class StepScripts : WizardStep
             FillWeight = 60,
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
-        _grid.Columns.Add(new DataGridViewComboBoxColumn
+        _sqlGrid.Columns.Add(new DataGridViewComboBoxColumn
         {
             Name = "Kind",
             HeaderText = "Kind",
@@ -79,40 +145,28 @@ internal sealed class StepScripts : WizardStep
             ValueType = typeof(DbScriptKind),
             FillWeight = 25,
         });
-        var removeColumn = new DataGridViewButtonColumn
+        _sqlGrid.Columns.Add(new DataGridViewButtonColumn
         {
             Name = "Remove",
             HeaderText = "Remove",
             Text = "Remove",
             UseColumnTextForButtonValue = true,
             FillWeight = 15,
-        };
-        _grid.Columns.Add(removeColumn);
-        _grid.CellValueChanged += (_, _) => CommitFromGrid();
-        _grid.RowsRemoved += (_, _) => CommitFromGrid();
-        _grid.CellContentClick += Grid_CellContentClick;
-        layout.Controls.Add(_grid);
+        });
+        _sqlGrid.CellValueChanged += (_, _) => CommitSqlFromGrid();
+        _sqlGrid.RowsRemoved += (_, _) => CommitSqlFromGrid();
+        _sqlGrid.CellContentClick += SqlGrid_CellContentClick;
+        layout.Controls.Add(_sqlGrid);
 
         _countLabel = new Label
         {
             Text = "No scripts attached.",
             AutoSize = false,
-            Height = 24,
-            Dock = DockStyle.Fill,
-            ForeColor = Color.DimGray,
-        };
-        layout.Controls.Add(_countLabel);
-
-        var note = new Label
-        {
-            Text = "Scripts are embedded into the package under db/ and run by the Deployer after an explicit " +
-                   "confirm — transaction safety is analyzed there (Schema vs Data only tags the intent).",
-            AutoSize = false,
             Height = 36,
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };
-        layout.Controls.Add(note);
+        layout.Controls.Add(_countLabel);
 
         Controls.Add(layout);
     }
@@ -120,20 +174,162 @@ internal sealed class StepScripts : WizardStep
     public override string Title => "5. DB scripts";
 
     public override string Hint =>
-        "Optional. Attach .sql files for this release and tag each as Schema or Data.";
+        "Pick the EF database project to auto-track migrations (checked = pending since the last deployed package), " +
+        "and/or attach external .sql files. Selected migrations generate a script on build.";
 
     public override bool CanProceed => true;
 
-    public override void OnEnter()
+    public override async void OnEnter()
     {
-        _grid.Rows.Clear();
-        foreach (var script in Draft.DbScripts)
-            _grid.Rows.Add(script.File, script.Kind);
-
+        // Populate the EF project dropdown with ALL .csproj under the
+        // folder picked in step 1 (unfiltered — the DB project is usually a
+        // class library, not a web app). Then fetch the baseline manifest's
+        // AppliedMigrations so we can auto-check only the pending migrations.
+        await PopulateEfProjectsAsync();
+        PopulateSqlGrid();
         UpdateCountLabel();
     }
 
-    public override void OnLeave() => CommitFromGrid();
+    public override void OnLeave()
+    {
+        CommitSqlFromGrid();
+        CommitEfSelection();
+    }
+
+    // ---------------------------------------------------------------
+    // EF migrations
+
+    private async Task PopulateEfProjectsAsync()
+    {
+        if (Draft.FolderPath is null)
+        {
+            _efProjectBox.Items.Clear();
+            _efHintLabel.Text = "Pick a folder in step 1 first.";
+            return;
+        }
+
+        var projects = await Task.Run(() => DiscoverAllProjects(Draft.FolderPath));
+        _efProjectBox.Items.Clear();
+        foreach (var p in projects)
+            _efProjectBox.Items.Add(p);
+
+        // Restore the previously selected project if it's still in the list.
+        if (Draft.EfMigrationsProjectPath is { } prev && projects.Contains(prev))
+        {
+            _efProjectBox.SelectedItem = prev;
+        }
+        else if (projects.Count > 0 && _efProjectBox.SelectedIndex < 0)
+        {
+            _efProjectBox.SelectedIndex = 0; // auto-select the first project
+        }
+
+        if (projects.Count == 0)
+            _efHintLabel.Text = "No .csproj found under the selected folder.";
+    }
+
+    private async Task OnEfProjectSelectedAsync()
+    {
+        if (_efProjectBox.SelectedItem is not string project || project.Length == 0)
+        {
+            _efMigrations = Array.Empty<EfMigration>();
+            _efMigrationsGrid.Rows.Clear();
+            Draft.SelectedEfMigrations.Clear();
+            Draft.EfMigrationsProjectPath = null;
+            return;
+        }
+
+        Draft.EfMigrationsProjectPath = project;
+
+        // Fetch the baseline manifest's AppliedMigrations so we can auto-check
+        // only the pending (not-yet-applied) migrations. Fetched once per
+        // project selection — cached in the draft for the build step.
+        await FetchPreviouslyAppliedMigrationsAsync();
+
+        // Discover migrations + populate the grid with auto-checked = pending.
+        _efMigrations = await Task.Run(() => MigrationScriptGenerator.DiscoverMigrations(project));
+        PopulateEfMigrationsGrid();
+    }
+
+    /// <summary>Fetches the last DEPLOYED package's manifest and caches its
+    /// AppliedMigrations in <see cref="Draft.PreviouslyAppliedMigrations"/>.
+    /// Empty on the first package (no baseline). Runs under Guard.</summary>
+    private async Task FetchPreviouslyAppliedMigrationsAsync()
+    {
+        if (Draft.Component is null)
+        {
+            Draft.PreviouslyAppliedMigrations = new HashSet<string>(StringComparer.Ordinal);
+            return;
+        }
+
+        var componentId = Draft.Component.ComponentId;
+        IReadOnlyList<string> applied = Array.Empty<string>();
+        await Guard.RunAsync(Wizard, "Loading applied migrations…", async _ =>
+        {
+            var baseline = await Wizard.Registry.GetLatestDeployedPackageAsync(componentId);
+            if (baseline is null)
+            {
+                applied = Array.Empty<string>();
+                return;
+            }
+            var manifest = ManifestSerializer.Deserialize(baseline.ManifestJson);
+            applied = manifest.AppliedMigrations;
+        });
+
+        Draft.PreviouslyAppliedMigrations = new HashSet<string>(applied, StringComparer.Ordinal);
+    }
+
+    private void PopulateEfMigrationsGrid()
+    {
+        _loadingEfGrid = true;
+        _efMigrationsGrid.Rows.Clear();
+        Draft.SelectedEfMigrations.Clear();
+
+        var applied = Draft.PreviouslyAppliedMigrations;
+        foreach (var m in _efMigrations)
+        {
+            var isApplied = applied.Contains(m.Name);
+            // Auto-CHECK pending (not yet applied); uncheck + mark "applied"
+            // for already-deployed migrations. The user can override.
+            var idx = _efMigrationsGrid.Rows.Add(!isApplied, m.Name, isApplied ? "applied" : "pending");
+            if (!isApplied)
+                Draft.SelectedEfMigrations.Add(m.Name);
+            else
+                _efMigrationsGrid.Rows[idx].DefaultCellStyle.ForeColor = Color.DimGray; // dim applied rows
+        }
+        _loadingEfGrid = false;
+
+        var pending = _efMigrations.Count(m => !applied.Contains(m.Name));
+        _efHintLabel.Text = _efMigrations.Count == 0
+            ? "No EF migrations found in this project's Migrations folder."
+            : $"{_efMigrations.Count} migration(s) found, {pending} pending (auto-checked). " +
+              "Checked migrations generate a script on build and are recorded as applied in the manifest.";
+    }
+
+    private void OnEfCheckboxChanged(DataGridViewCellEventArgs e)
+    {
+        if (_loadingEfGrid || e.RowIndex < 0 || e.ColumnIndex != 0)
+            return;
+
+        var row = _efMigrationsGrid.Rows[e.RowIndex];
+        if (row.Cells["Migration"].Value is not string name)
+            return;
+
+        var include = row.Cells["Include"].Value as bool? ?? false;
+        if (include)
+            Draft.SelectedEfMigrations.Add(name);
+        else
+            Draft.SelectedEfMigrations.Remove(name);
+    }
+
+    private void CommitEfSelection()
+    {
+        // Already maintained live by OnEfCheckboxChanged — nothing to do here,
+        // but kept for symmetry with CommitSqlFromGrid and as a hook if the
+        // commit model ever needs to change.
+    }
+
+    // ---------------------------------------------------------------
+    // External .sql files
 
     private void AddScripts()
     {
@@ -150,10 +346,6 @@ internal sealed class StepScripts : WizardStep
         foreach (var fullPath in picker.FileNames)
         {
             var fileName = Path.GetFileName(fullPath);
-
-            // Same file re-added → refresh the source path silently; a
-            // DIFFERENT file reusing an existing name would silently change
-            // which bytes get embedded — refuse that instead.
             if (Draft.DbScriptSourcePaths.TryGetValue(fileName, out var existing) &&
                 !string.Equals(existing, fullPath, StringComparison.OrdinalIgnoreCase))
             {
@@ -162,115 +354,98 @@ internal sealed class StepScripts : WizardStep
                     "Rename one of them so the embedded script names stay unique.");
                 continue;
             }
-
             Draft.DbScriptSourcePaths[fileName] = fullPath;
         }
 
-        ReloadFromDraft();
+        ReloadSqlFromDraft();
     }
 
-    /// <summary>#2: opens the EF-migrations dialog. On OK, the generated SQL
-    /// is written to a temp file and attached to the package as an editable
-    /// .sql script (tagged Schema by default — EF migrations are schema
-    /// changes). The user can then edit/remove it and add more scripts on
-    /// top, exactly like a manually-added .sql file.</summary>
-    private void GenerateFromEfMigrations()
+    private void SqlGrid_CellContentClick(object? sender, DataGridViewCellEventArgs e)
     {
-        // Default the dialog to the web project's parent — the DB project is
-        // usually a sibling (same solution folder), so the user starts near it.
-        var initialFolder = Draft.FolderPath is { } webFolder && Directory.Exists(webFolder)
-            ? Path.GetDirectoryName(webFolder)
-            : null;
-
-        using var dialog = new MigrationScriptDialog(initialFolder);
-        if (dialog.ShowDialog(this) != DialogResult.OK
-            || string.IsNullOrWhiteSpace(dialog.ResultScriptText)
-            || string.IsNullOrWhiteSpace(dialog.ResultFileName))
+        if (e.RowIndex < 0 || _sqlGrid.Columns[e.ColumnIndex].Name != "Remove")
             return;
-
-        var fileName = EnsureUniqueFileName(dialog.ResultFileName!);
-        var tempPath = Path.Combine(Path.GetTempPath(), "DeployToolkit", "ef-migrations",
-            $"{Guid.NewGuid():N}_{fileName}");
-        Directory.CreateDirectory(Path.GetDirectoryName(tempPath)!);
-        File.WriteAllText(tempPath, dialog.ResultScriptText!);
-
-        // Attach as a Schema script (EF migrations are schema changes by
-        // definition — the user can flip it to Data in the grid if needed).
-        Draft.DbScriptSourcePaths[fileName] = tempPath;
-        ReloadFromDraft();
-    }
-
-    /// <summary>Ensures <paramref name="desired"/> doesn't collide with an
-    /// already-attached script's name (same uniqueness rule as AddScripts).
-    /// Appends " (2)", " (3)", … before the <c>.sql</c> extension until it's
-    /// unique.</summary>
-    private string EnsureUniqueFileName(string desired)
-    {
-        if (!Draft.DbScriptSourcePaths.ContainsKey(desired))
-            return desired;
-
-        var stem = Path.GetFileNameWithoutExtension(desired);
-        var ext = Path.GetExtension(desired);
-        for (var i = 2; ; i++)
-        {
-            var candidate = $"{stem} ({i}){ext}";
-            if (!Draft.DbScriptSourcePaths.ContainsKey(candidate))
-                return candidate;
-        }
-    }
-
-    private void Grid_CellContentClick(object? sender, DataGridViewCellEventArgs e)
-    {
-        if (e.RowIndex < 0 || _grid.Columns[e.ColumnIndex].Name != "Remove")
-            return;
-
-        if (_grid.Rows[e.RowIndex].Cells["File"].Value is string fileName)
+        if (_sqlGrid.Rows[e.RowIndex].Cells["File"].Value is string fileName)
             Draft.DbScriptSourcePaths.Remove(fileName);
-
-        _grid.Rows.RemoveAt(e.RowIndex);
-        CommitFromGrid();
+        _sqlGrid.Rows.RemoveAt(e.RowIndex);
+        CommitSqlFromGrid();
     }
 
-    /// <summary>Grid is the source of truth — rebuild the draft's script list
-    /// from the visible rows (order preserved).</summary>
-    private void CommitFromGrid()
+    private void CommitSqlFromGrid()
     {
-        if (_loadingRows)
+        if (_loadingSqlGrid)
             return;
 
         Draft.DbScripts.Clear();
-        foreach (DataGridViewRow row in _grid.Rows)
+        foreach (DataGridViewRow row in _sqlGrid.Rows)
         {
-            if (row.IsNewRow)
-                continue;
-
+            if (row.IsNewRow) continue;
             var file = row.Cells["File"].Value as string;
             if (string.IsNullOrWhiteSpace(file) || !Draft.DbScriptSourcePaths.ContainsKey(file))
                 continue;
-
             var kind = row.Cells["Kind"].Value is DbScriptKind parsed ? parsed : DbScriptKind.Schema;
             Draft.DbScripts.Add(new DbScriptRef(file, kind));
         }
-
         UpdateCountLabel();
     }
 
-    private void ReloadFromDraft()
+    private void PopulateSqlGrid()
     {
-        _loadingRows = true;
-        _grid.Rows.Clear();
+        _loadingSqlGrid = true;
+        _sqlGrid.Rows.Clear();
+        foreach (var script in Draft.DbScripts)
+            _sqlGrid.Rows.Add(script.File, script.Kind);
+        _loadingSqlGrid = false;
+    }
+
+    private void ReloadSqlFromDraft()
+    {
+        _loadingSqlGrid = true;
+        _sqlGrid.Rows.Clear();
         foreach (var name in Draft.DbScriptSourcePaths.Keys)
         {
             var kind = Draft.DbScripts.FirstOrDefault(s => s.File == name)?.Kind ?? DbScriptKind.Schema;
-            _grid.Rows.Add(name, kind);
+            _sqlGrid.Rows.Add(name, kind);
         }
-        _loadingRows = false;
-
-        CommitFromGrid();
+        _loadingSqlGrid = false;
+        CommitSqlFromGrid();
     }
 
     private void UpdateCountLabel() =>
         _countLabel.Text = Draft.DbScripts.Count == 0
-            ? "No scripts attached."
-            : $"{Draft.DbScripts.Count} script(s) attached — embedded under db/ in the package.";
+            ? "No external scripts attached. EF migrations (if selected) generate their own script on build."
+            : $"{Draft.DbScripts.Count} external script(s) attached — embedded under db/ in the package.";
+
+    // ---------------------------------------------------------------
+    // Helpers
+
+    /// <summary>Recursively finds ALL .csproj files under the folder,
+    /// skipping bin/obj/.git. Unfiltered (unlike StepPublish's DiscoverProjects
+    /// which filters to web apps) — the DB project is usually a class
+    /// library, not a web app.</summary>
+    private static List<string> DiscoverAllProjects(string rootFolder)
+    {
+        var results = new List<string>();
+        var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "bin", "obj", ".git" };
+
+        void Walk(string directory)
+        {
+            try
+            {
+                results.AddRange(Directory.EnumerateFiles(directory, "*.csproj"));
+                foreach (var sub in Directory.EnumerateDirectories(directory))
+                {
+                    if (skip.Contains(Path.GetFileName(sub)))
+                        continue;
+                    Walk(sub);
+                }
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or DirectoryNotFoundException)
+            {
+                // unreadable subtree — skip it
+            }
+        }
+
+        Walk(rootFolder);
+        return results;
+    }
 }
