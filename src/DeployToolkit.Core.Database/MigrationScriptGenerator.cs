@@ -234,6 +234,20 @@ public static class MigrationScriptGenerator
                 "Could not locate the dotnet executable. Install the .NET SDK " +
                 "(and the EF Core tools: 'dotnet tool install --global dotnet-ef').");
 
+        // The 'dotnet ef' subcommand requires the dotnet-ef global tool to be
+        // installed AND on PATH. Check it proactively so we can give a clear,
+        // actionable error instead of the raw 'dotnet-ef does not exist' text
+        // that dotnet itself prints when the tool is missing.
+        var efCheck = await CheckDotNetEfInstalledAsync(dotnet);
+        if (!efCheck.Installed)
+        {
+            return new MigrationScriptResult(false, string.Empty, -1,
+                $"The EF Core tools are not installed (or not on PATH). " +
+                $"Install them once with:\n\n  dotnet tool install --global dotnet-ef\n\n" +
+                $"Then restart the app so the new PATH is picked up. " +
+                $"(Detected dotnet: {dotnet}. Tool path checked: {efCheck.ToolsPath})");
+        }
+
         var outputFile = Path.Combine(Path.GetTempPath(), "DeployToolkit",
             "ef-migrations", $"{Guid.NewGuid():N}.sql");
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
@@ -260,6 +274,13 @@ public static class MigrationScriptGenerator
             StandardErrorEncoding = Encoding.UTF8,
             WorkingDirectory = workingDir,
         };
+
+        // Ensure the dotnet global tools directory is on the child process's
+        // PATH so `dotnet ef` can find the dotnet-ef tool. The SDK adds
+        // %USERPROFILE%\.dotnet\tools to PATH at install time, but the
+        // resolved dotnet might be from a custom location (DOTNET_ROOT) whose
+        // environment doesn't carry it — so add it explicitly.
+        AddGlobalToolsToPath(psi);
 
         using var process = new Process { StartInfo = psi };
         var output = new List<string>();
@@ -337,4 +358,71 @@ public static class MigrationScriptGenerator
 
     private static string Quote(string path) =>
         path.Contains(' ') ? $"\"{path}\"" : path;
+
+    /// <summary>The dotnet global tools directory (%USERPROFILE%\.dotnet\tools
+    /// on Windows, ~/.dotnet/tools on Linux/macOS). This is where
+    /// <c>dotnet-ef</c> lands after <c>dotnet tool install --global dotnet-ef</c>.</summary>
+    public static string GetGlobalToolsDirectory()
+    {
+        // %USERPROFILE%\.dotnet\tools (Windows) / ~/.dotnet/tools (Unix).
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrWhiteSpace(userProfile))
+            userProfile = Environment.GetEnvironmentVariable("HOME") ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(userProfile))
+            return string.Empty;
+        return Path.Combine(userProfile, ".dotnet", "tools");
+    }
+
+    /// <summary>Checks whether <c>dotnet-ef</c> is installed and findable by
+    /// running <c>dotnet ef --version</c>. Returns the result + the tools path
+    /// checked (for the error message). Never throws.</summary>
+    private static async Task<(bool Installed, string ToolsPath)> CheckDotNetEfInstalledAsync(string dotnet)
+    {
+        var toolsPath = GetGlobalToolsDirectory();
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = dotnet,
+                Arguments = "ef --version",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            AddGlobalToolsToPath(psi);
+
+            using var p = Process.Start(psi);
+            if (p is null)
+                return (false, toolsPath);
+            await p.WaitForExitAsync();
+            // dotnet ef --version exits 0 when the tool is present. A non-zero
+            // exit (typically exit 1 with the "dotnet-ef does not exist" text)
+            // means the tool is missing.
+            return (p.ExitCode == 0, toolsPath);
+        }
+        catch
+        {
+            return (false, toolsPath);
+        }
+    }
+
+    /// <summary>Adds the dotnet global tools directory to the child process's
+    /// PATH so <c>dotnet ef</c> can find <c>dotnet-ef</c>. The SDK normally
+    /// adds %USERPROFILE%\.dotnet\tools at install time, but the resolved
+    /// <c>dotnet</c> may be from a custom DOTNET_ROOT whose environment
+    /// doesn't carry it — so add it explicitly here.</summary>
+    private static void AddGlobalToolsToPath(ProcessStartInfo psi)
+    {
+        var toolsDir = GetGlobalToolsDirectory();
+        if (string.IsNullOrEmpty(toolsDir) || !Directory.Exists(toolsDir))
+            return; // nothing to add
+
+        var currentPath = psi.EnvironmentVariables["PATH"] ?? Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        if (currentPath.Contains(toolsDir, StringComparison.OrdinalIgnoreCase))
+            return; // already there
+
+        // Prepend so the tools dir wins over any stale entry.
+        psi.EnvironmentVariables["PATH"] = $"{toolsDir}{Path.PathSeparator}{currentPath}";
+    }
 }
