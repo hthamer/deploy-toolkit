@@ -288,13 +288,36 @@ internal sealed class StageDeploy : StagePanel
         // the deploy (user-reported freeze class).
         var result = await Task.Run(() => orchestrator.RunAsync(request, packageId));
 
+        // Q8: after the orchestrator backs up the website files, generate a
+        // full database backup (.bak) alongside the file backup when:
+        //  - the manifest has DB scripts, AND
+        //  - a DB connection string was provided (from preflight or the
+        //    deploy prompt), AND
+        //  - the orchestrator created a backup folder.
+        // The backup runs BEFORE the return so the .bak lands in the same
+        // folder as the file backup. Best-effort — a backup failure is logged
+        // but doesn't fail the deploy (the file backup + the DB scripts
+        // themselves are the safety net).
+        if (manifest.DbScripts.Count > 0 && context.DbConnectionString is { } dbConn
+            && !string.IsNullOrEmpty(result.BackupFolder))
+        {
+            try
+            {
+                await GenerateDatabaseBackupAsync(dbConn, result.BackupFolder, logger);
+            }
+            catch (Exception dbEx)
+            {
+                logger.Warn($"Database backup failed (non-fatal — file backup succeeded): {dbEx.Message}");
+            }
+        }
+
         return new RunOutcome(
             result.Success,
             result.Success ? "Success" : result.RolledBack ? "RolledBack" : "Failed",
             result.RolledBack,
             result.Message,
             result.BackupFolder,
-            result.Success, // Success is only returned when health passed (or no URL) — mirror it for the offline record
+            result.Success,
             result.Log);
     }
 
@@ -328,6 +351,62 @@ internal sealed class StageDeploy : StagePanel
             throw new OperationCanceledException(); // abort before anything is touched
         }
 
+        return null;
+    }
+
+    /// <summary>
+    /// Q8: generates a full database backup (.bak) via <c>BACKUP DATABASE
+    /// TO DISK</c> and saves it alongside the file backup folder. Runs off
+    /// the UI thread (SQL Server backup is blocking IO). Best-effort — a
+    /// failure is logged but doesn't fail the deploy.
+    /// </summary>
+    private static async Task GenerateDatabaseBackupAsync(
+        string connectionString, string backupFolder, RunLogger logger)
+    {
+        // Extract the database name from the connection string to name the
+        // .bak file and to reference it in the BACKUP command.
+        var dbName = ExtractDatabaseName(connectionString) ?? "database";
+        var bakPath = Path.Combine(backupFolder, $"{dbName}.bak");
+        logger.Info($"Generating database backup: {bakPath}");
+
+        await Task.Run(() =>
+        {
+            using var conn = new Microsoft.Data.SqlClient.SqlConnection(connectionString);
+            conn.Open();
+
+            // BACKUP DATABASE with INIT (overwrite — this is a fresh backup
+            // folder) and COMPRESSION (smaller file for < 2GB DBs). The
+            // timeout is generous (10 min) since a 2GB DB backup can take a
+            // few minutes on a slow disk.
+            var sql = $"BACKUP DATABASE [{dbName}] TO DISK = N'{bakPath}' " +
+                      $"WITH INIT, COMPRESSION, NAME = N'DeployToolkit pre-deploy backup'";
+            using var cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, conn)
+            {
+                CommandTimeout = 600, // 10 minutes
+            };
+            cmd.ExecuteNonQuery();
+        });
+
+        var sizeMB = new FileInfo(bakPath).Length / (1024.0 * 1024);
+        logger.Info($"Database backup completed: {bakPath} ({sizeMB:F1} MB)");
+    }
+
+    /// <summary>Extracts the Initial Catalog / Database value from a SQL
+    /// connection string. Returns null when not found (the caller falls back
+    /// to "database").</summary>
+    private static string? ExtractDatabaseName(string connectionString)
+    {
+        foreach (var part in connectionString.Split(';',
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var sep = part.IndexOf('=');
+            if (sep <= 0) continue;
+            var key = part[..sep].Trim();
+            var value = part[(sep + 1)..].Trim();
+            if (key.Equals("Initial Catalog", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("Database", StringComparison.OrdinalIgnoreCase))
+                return value;
+        }
         return null;
     }
 
