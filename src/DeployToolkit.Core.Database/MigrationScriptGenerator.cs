@@ -196,23 +196,39 @@ public static class MigrationScriptGenerator
         if (string.IsNullOrWhiteSpace(outputFile))
             throw new ArgumentException("outputFile is required.", nameof(outputFile));
 
+        // dotnet ef migrations script [from] [to]:
+        //   0 args  = full schema (first migration to latest)
+        //   1 arg   = from `from` to latest
+        //   2 args  = from `from` to `to`
+        //
+        // CRITICAL: when `from` is null (first package, nothing previously
+        // applied) but `to` is set, we MUST pass `0` as the `from` (EF Core's
+        // special "empty database" value) — otherwise `to` lands in the `from`
+        // position (single positional arg), and `from == to == latest` produces
+        // an EMPTY script. This was the "exit 0 + empty output" bug: the user
+        // selected all migrations, the tool passed only the newest as a single
+        // arg, and dotnet ef interpreted it as "from latest to latest" → nothing
+        // to script.
         var sb = new StringBuilder("ef migrations script");
         if (!string.IsNullOrWhiteSpace(fromMigration))
+        {
+            // from is set → append it, then to (if set)
             sb.Append(' ').Append(fromMigration);
-        if (!string.IsNullOrWhiteSpace(toMigration))
-            sb.Append(' ').Append(toMigration);
+            if (!string.IsNullOrWhiteSpace(toMigration))
+                sb.Append(' ').Append(toMigration);
+        }
+        else if (!string.IsNullOrWhiteSpace(toMigration))
+        {
+            // from is null, to is set → pass `0` (empty database) as `from`
+            // so the script covers from the beginning to `to`
+            sb.Append(" 0 ").Append(toMigration);
+        }
+        // else: both null → 0 args → full schema (first to latest)
+
         sb.Append(" --project ").Append(Quote(dbProjectFolder));
         sb.Append(" --output ").Append(Quote(outputFile));
         if (idempotent)
             sb.Append(" --idempotent");
-        // NOTE: do NOT add --no-build. The DB project (a class library, usually
-        // a different project than the web app the publish step built) must be
-        // built so dotnet ef can load the compiled migrations from its obj/.
-        // With --no-build and no prior build of the DB project, dotnet ef
-        // exits 0 but writes an empty script → the tool reported "unknown
-        // error" because Success required a non-empty output. Letting dotnet ef
-        // build is the safe default; the extra build is seconds for a class
-        // library.
         return sb.ToString();
     }
 

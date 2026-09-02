@@ -373,6 +373,15 @@ try
     Check("delta script — from/to migrations precede --project",
         args2 == "ef migrations script 20260101120000_InitialCreate 20260301120000_AddIndexes --project C:\\repo\\DB --output C:\\out\\script.sql");
 
+    // THE BUG CASE: from=null (first package, nothing applied), to=set (newest
+    // selected). Without the fix, `to` was the only positional arg -> dotnet ef
+    // interpreted it as `from` -> from==to==latest -> EMPTY script. The fix
+    // passes `0` (empty database) as `from` so the script covers everything.
+    var argsFirstPkg = MigrationScriptGenerator.BuildArguments(
+        @"C:\repo\DB", @"C:\out\script.sql", fromMigration: null, toMigration: "20260608100749_CategoryFields");
+    Check("first-package script: from=null + to=set -> passes 0 as from",
+        argsFirstPkg == "ef migrations script 0 20260608100749_CategoryFields --project C:\\repo\\DB --output C:\\out\\script.sql");
+
     var argEx1 = false;
     try { MigrationScriptGenerator.BuildArguments("", "out.sql", null, null); }
     catch (ArgumentException) { argEx1 = true; }
@@ -389,6 +398,12 @@ try
         @"C:\repo\DB", @"C:\out\script.sql", "20260101_Initial", "20260301_AddIndexes", idempotent: true);
     Check("idempotent flag adds --idempotent",
         args3.Contains("--idempotent"));
+
+    // Idempotent + first-package (from=null, to=set + idempotent).
+    var args4 = MigrationScriptGenerator.BuildArguments(
+        @"C:\repo\DB", @"C:\out\script.sql", fromMigration: null, toMigration: "20260608100749_CategoryFields", idempotent: true);
+    Check("first-package + idempotent: 0 <to> --idempotent",
+        args4 == "ef migrations script 0 20260608100749_CategoryFields --project C:\\repo\\DB --output C:\\out\\script.sql --idempotent");
 
     Console.WriteLine();
     Console.WriteLine("Note: SqlServerScriptRunner connection-string path is compile-verified only");
