@@ -42,15 +42,24 @@ internal sealed class StageLoadPackage : StagePanel
 
         layout.Controls.Add(AppTheme.MakeSectionLabel("Package file (delta.zip)"));
 
-        var zipRow = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill };
+        var zipRow = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Dock = DockStyle.Fill };
         zipRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        zipRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         zipRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _zipPathBox = new TextBox { Dock = DockStyle.Fill };
         var browseButton = new Button { Text = "Browse…" };
         AppTheme.StyleButton(browseButton);
         browseButton.Click += (_, _) => PickZipPath();
+        // Option B: pick a package straight from the registry — the dialog
+        // lists components + their packages, and on OK fills the zip path from
+        // the selected row's PackageLocation (the shared-store path). No more
+        // "where did the builder put the .zip?" — the registry tracks it.
+        var pickFromRegistryButton = new Button { Text = "Pick from registry…" };
+        AppTheme.StyleButton(pickFromRegistryButton);
+        pickFromRegistryButton.Click += (_, _) => PickFromRegistry();
         zipRow.Controls.Add(_zipPathBox, 0, 0);
         zipRow.Controls.Add(browseButton, 1, 0);
+        zipRow.Controls.Add(pickFromRegistryButton, 2, 0);
         layout.Controls.Add(zipRow);
 
         // Offline-mode convenience: the offline registry has no Packager
@@ -210,6 +219,41 @@ internal sealed class StageLoadPackage : StagePanel
 
         if (picker.ShowDialog(this) == DialogResult.OK)
             _zipPathBox.Text = picker.FileName;
+    }
+
+    /// <summary>Option B: opens the registry package picker. On OK, fills the
+    /// zip path from the selected package's <see cref="PackageRecord.PackageLocation"/>
+    /// — the shared-store path the Packager uploaded the .zip to. If the .zip
+    /// isn't reachable at that path (share down / credentials missing), the
+    /// existing "File not found" check in <see cref="LoadAsync"/> surfaces a
+    /// clear error; the user can also still use Browse… to pick a manually
+    /// copied .zip.</summary>
+    private void PickFromRegistry()
+    {
+        var store = Shell.Store;
+        if (store is null)
+        {
+            AppTheme.Error(this, "Connect to a registry first (menu: Registry Connection…).");
+            return;
+        }
+
+        using var dialog = new RegistryPackagePickerDialog(store);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.ResultPackage is not { } pkg)
+            return;
+
+        if (string.IsNullOrWhiteSpace(pkg.PackageLocation))
+        {
+            _messageLabel.ForeColor = Color.Firebrick;
+            _messageLabel.Text =
+                $"Package '{pkg.Version}' was not uploaded to the shared store (PackageLocation is empty). " +
+                "The builder either didn't configure a package store or the upload failed. " +
+                "Copy the .zip by hand and use Browse…, or ask the builder to rebuild with the store configured.";
+            return;
+        }
+
+        _zipPathBox.Text = pkg.PackageLocation!;
+        _messageLabel.ForeColor = Color.DimGray;
+        _messageLabel.Text = $"Picked package '{pkg.Version}' ({pkg.Status}) from the registry. Click 'Verify & Load' below.";
     }
 
     /// <summary>

@@ -40,6 +40,10 @@ public sealed class MainForm : Form
     private PackageBuilder? _builder;
     private ILocalProjectMappingStore _mappingStore;
     private string? _connectionError;
+    // Option B: the shared package store (a network folder) the builder uploads
+    // delta.zips to so a Deployer on another machine can fetch them. Null when
+    // the user hasn't configured a PackageStoreRootPath (local-only behavior).
+    private DeployToolkit.Core.Packaging.IPackageStore? _packageStore;
 
     private ToolStripMenuItem _newPackageItem = null!;
     private ToolStripMenuItem _clientsItem = null!;
@@ -241,7 +245,11 @@ public sealed class MainForm : Form
             _connectionError = null;
             DisposeStore();
             _store = store;
-            _builder = new PackageBuilder(_store, _mappingStore);
+            // Build the package store (Option B) from the configured root.
+            // Null when PackageStoreRootPath is empty → local-only behavior
+            // (the .zip lives only on this PC; the Deployer needs a manual copy).
+            _packageStore = TryBuildPackageStore(settings);
+            _builder = new PackageBuilder(_store, _mappingStore, _packageStore);
             return true;
         }
         catch (ArgumentException ex)
@@ -270,6 +278,21 @@ public sealed class MainForm : Form
             disposable.Dispose();
         _store = null;
         _builder = null;
+        _packageStore = null;
+    }
+
+    /// <summary>Builds the <see cref="DeployToolkit.Core.Packaging.IPackageStore"/>
+    /// from the configured <see cref="RegistryConnectionSettings.PackageStoreRootPath"/>.
+    /// Returns null when the root is empty (local-only behavior). The store
+    /// is created eagerly — a bad/empty path throws here so the connection
+    /// flow surfaces it (the user typed a non-empty path that can't be a
+    /// store root), but a valid path that's unreachable at upload time is
+    /// reported then, not now (the share may be down momentarily).</summary>
+    private static DeployToolkit.Core.Packaging.IPackageStore? TryBuildPackageStore(RegistryConnectionSettings settings)
+    {
+        if (string.IsNullOrWhiteSpace(settings.PackageStoreRootPath))
+            return null;
+        return new DeployToolkit.Core.Packaging.FileSystemPackageStore(settings.PackageStoreRootPath!);
     }
 
     private void UpdateConnectionUi()

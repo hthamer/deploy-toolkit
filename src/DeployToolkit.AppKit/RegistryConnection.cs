@@ -43,6 +43,20 @@ public sealed class RegistryConnectionSettings
     public string? LocalRoot { get; set; }
 
     /// <summary>
+    /// The shared folder where built delta.zips are published so the Deployer
+    /// (on another machine) can fetch them without the builder copying the
+    /// file by hand (Option B: shared folder + registry links the package).
+    /// A UNC path (<c>\\fileserver\DeployToolkit\Packages</c>) or a local
+    /// path. Null/empty = no store configured — the .zip lives only on the
+    /// builder's PC and must be copied to the deployer manually (the
+    /// pre-Option-B behavior). Applies to BOTH modes (SqlServer and
+    /// LocalFile) — the store is independent of where the registry lives.
+    /// Credentials for a password-protected share are resolved automatically
+    /// from Windows Credential Manager; no auth is configured here.
+    /// </summary>
+    public string? PackageStoreRootPath { get; set; }
+
+    /// <summary>
     /// Where the shells persist these settings by default:
     /// %APPDATA%\DeployToolkit\packager-registry.json (falls back to the
     /// current directory when %APPDATA% is unavailable, e.g. on some CI hosts).

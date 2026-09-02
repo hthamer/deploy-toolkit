@@ -205,9 +205,24 @@ internal sealed class StepBuild : WizardStep
             $"Package id:    {built.Record.PackageId}\n" +
             $"Zip:           {built.ZipPath}\n" +
             $"Manifest:      {manifest.Files.Count} changed/new file(s), {manifest.DeletedFiles.Count} deleted\n" +
-            $"Baseline:      {manifest.BaselineManifest ?? "(none — first package for this component)"}";
+            $"Baseline:      {manifest.BaselineManifest ?? "(none — first package for this component)"}" +
+            (string.IsNullOrEmpty(built.Record.PackageLocation)
+                ? string.Empty
+                : $"\nShared store: {built.Record.PackageLocation}");
 
-        if (built.UnresolvedStalePackages.Count > 0)
+        // Option B: the upload to the shared store failed — the build still
+        // succeeded (the local .zip is fine), but the Deployer won't find it
+        // via the registry. Surface a warning so the user knows to copy the
+        // .zip by hand or fix the share credentials.
+        if (!string.IsNullOrEmpty(built.PackageStoreError))
+        {
+            _staleLabel.Text =
+                $"Warning: package saved locally but the shared-store upload failed — {built.PackageStoreError}. " +
+                "The Deployer won't find this package via the registry; copy the .zip by hand, " +
+                "or save the share's credentials in Windows Credential Manager and rebuild.";
+            _staleLabel.Visible = true;
+        }
+        else if (built.UnresolvedStalePackages.Count > 0)
         {
             var versions = string.Join(", ", built.UnresolvedStalePackages.Select(p => p.Version));
             _staleLabel.Text =

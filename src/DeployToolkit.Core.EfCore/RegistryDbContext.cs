@@ -110,6 +110,11 @@ public sealed class RegistryDbContext : DbContext
                 .HasConversion<string>()
                 .HasMaxLength(20);
             e.Property(p => p.DeployedBy).HasMaxLength(100);
+            // Where the built .zip physically lives (Option B: shared folder +
+            // registry links the package). UNC path / local path / URL; null
+            // when no package store is configured (the .zip lives only on the
+            // builder's PC and must be copied by hand).
+            e.Property(p => p.PackageLocation).HasMaxLength(512);
 
             e.HasOne<DeploymentComponent>()
                 .WithMany()

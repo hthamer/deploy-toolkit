@@ -274,7 +274,7 @@ public sealed class EfCoreRegistryStore : IRegistryStore
             .ToList();
     }
 
-    public async Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest)
+    public async Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest, string? packageLocation = null)
     {
         await using var db = await _factory.CreateDbContextAsync();
 
@@ -290,6 +290,7 @@ public sealed class EfCoreRegistryStore : IRegistryStore
             ManifestJson = ManifestSerializer.Serialize(manifest),
             GitCommitSha = manifest.GitCommitSha,
             Status = PackageStatus.Created,
+            PackageLocation = packageLocation,
         };
 
         db.Packages.Add(record);

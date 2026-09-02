@@ -28,6 +28,7 @@ public sealed class ConnectionDialog : Form
     private readonly RadioButton _localFileRadio;
     private readonly TextBox _connectionStringBox;
     private readonly TextBox _localRootBox;
+    private readonly TextBox _packageStoreBox;
     private readonly Label _statusLabel;
     private readonly Func<RegistryConnectionSettings, bool>? _onApplied;
 
@@ -51,7 +52,7 @@ public sealed class ConnectionDialog : Form
         MaximizeBox = false;
         MinimizeBox = false;
         AppTheme.Apply(this);
-        Size = new Size(680, 520);
+        Size = new Size(680, 600);
 
         var layout = new TableLayoutPanel
         {
@@ -128,6 +129,38 @@ public sealed class ConnectionDialog : Form
         layout.Controls.Add(AppTheme.MakeSectionLabel("Local registry root folder"));
         layout.Controls.Add(localRootRow);
 
+        // --- Package store section (Option B: shared folder, applies to BOTH modes) ---
+        // Where built delta.zips are published so a Deployer on another machine
+        // can fetch them. A UNC path (\\fileserver\DeployToolkit\Packages) or a
+        // local path. Empty = no store (the .zip lives only on the builder's PC).
+        _packageStoreBox = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Width = 380,
+            PlaceholderText = "\\\\fileserver\\DeployToolkit\\Packages (leave empty for local-only)",
+        };
+        var storeBrowseButton = new Button { Text = "Browse…" };
+        AppTheme.StyleButton(storeBrowseButton);
+        storeBrowseButton.Click += (_, _) =>
+        {
+            using var picker = new FolderBrowserDialog
+            {
+                Description = "Shared package store folder (UNC path or local). Leave empty for local-only.",
+                ShowNewFolderButton = true,
+            };
+            if (Directory.Exists(_packageStoreBox.Text))
+                picker.SelectedPath = _packageStoreBox.Text;
+            if (picker.ShowDialog(this) == DialogResult.OK)
+                _packageStoreBox.Text = picker.SelectedPath;
+        };
+        var storeRow = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill };
+        storeRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        storeRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        storeRow.Controls.Add(_packageStoreBox, 0, 0);
+        storeRow.Controls.Add(storeBrowseButton, 1, 0);
+        layout.Controls.Add(AppTheme.MakeSectionLabel("Package store (shared folder — Option B)"));
+        layout.Controls.Add(storeRow);
+
         // --- status line (test result) ---
         _statusLabel = new Label
         {
@@ -172,6 +205,7 @@ public sealed class ConnectionDialog : Form
         _localFileRadio.Checked = current.Mode != RegistryMode.SqlServer;
         _connectionStringBox.Text = current.ConnectionString ?? string.Empty;
         _localRootBox.Text = current.LocalRoot ?? string.Empty;
+        _packageStoreBox.Text = current.PackageStoreRootPath ?? string.Empty;
     }
 
     private RegistryMode SelectedMode => _sqlServerRadio.Checked ? RegistryMode.SqlServer : RegistryMode.LocalFile;
@@ -194,6 +228,7 @@ public sealed class ConnectionDialog : Form
         Mode = SelectedMode,
         ConnectionString = NullIfEmpty(_connectionStringBox.Text),
         LocalRoot = NullIfEmpty(_localRootBox.Text),
+        PackageStoreRootPath = NullIfEmpty(_packageStoreBox.Text),
     };
 
     private async Task TestConnectionAsync()

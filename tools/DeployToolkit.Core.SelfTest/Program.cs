@@ -1292,6 +1292,82 @@ try
         sensResult.Manifest.Files.Count == 2);
 
     // ---------------------------------------------------------------
+    Console.WriteLine("== FileSystemPackageStore (Option B: shared folder upload/download) ==");
+    var storeRoot = Path.Combine(workRoot, "package-store");
+    var store = new FileSystemPackageStore(storeRoot);
+    Check("Root returns the configured path", store.Root == storeRoot);
+
+    // Upload a fake .zip + read it back.
+    var fakeZip = Path.Combine(workRoot, "fake-package.zip");
+    File.WriteAllText(fakeZip, "fake-zip-bytes");
+    var location = await store.UploadAsync(fakeZip, "CMS / Web", "1.2.3");
+    Check("Upload returns a path under <root>/<component>/", location.StartsWith(storeRoot));
+    Check("Upload path contains the sanitized component folder", location.Contains("CMS _ Web"));
+    Check("Upload path contains the version + .zip", location.EndsWith("CMS _ Web-1.2.3.zip"));
+    Check("Uploaded file exists in the store", File.Exists(location));
+    Check("Exists(location) is true", store.Exists(location));
+    Check("Exists(missing) is false", !store.Exists(Path.Combine(storeRoot, "nope.zip")));
+    Check("Exists(null/empty) is false", !store.Exists(null!) && !store.Exists(""));
+
+    // Download to a temp path — bytes must match.
+    var downloaded = Path.Combine(workRoot, "downloaded.zip");
+    await store.DownloadAsync(location, downloaded);
+    Check("Downloaded bytes match the uploaded file", File.ReadAllText(downloaded) == "fake-zip-bytes");
+
+    // Re-upload the same component+version overwrites (a rebuild).
+    File.WriteAllText(fakeZip, "fake-zip-bytes-v2");
+    var location2 = await store.UploadAsync(fakeZip, "CMS / Web", "1.2.3");
+    Check("Re-upload lands at the same path", location2 == location);
+    Check("Re-upload overwrote the file", File.ReadAllText(location2) == "fake-zip-bytes-v2");
+
+    // Download a missing location throws FileNotFoundException.
+    var missingEx = false;
+    try { await store.DownloadAsync(Path.Combine(storeRoot, "missing.zip"), Path.Combine(workRoot, "x.zip")); }
+    catch (FileNotFoundException) { missingEx = true; }
+    Check("Download missing location throws FileNotFoundException", missingEx);
+
+    // Empty root throws ArgumentException.
+    var emptyRootEx = false;
+    try { _ = new FileSystemPackageStore("  "); }
+    catch (ArgumentException) { emptyRootEx = true; }
+    Check("FileSystemPackageStore rejects empty root", emptyRootEx);
+
+    // ---------------------------------------------------------------
+    Console.WriteLine("== PackageBuilder + PackageLocation (Option B end-to-end) ==");
+    // A builder WITH a package store uploads the .zip and records the location
+    // on the PackageRecord; a builder WITHOUT a store leaves it null (the
+    // pre-Option-B behavior). Both write the local .zip either way.
+    var locRegistry = new LocalFileRegistryStore(Path.Combine(workRoot, "location-registry"));
+    var locMapping = new JsonFileProjectMappingStore(Path.Combine(workRoot, "location-mappings.json"));
+    var locStore = new FileSystemPackageStore(Path.Combine(workRoot, "location-store"));
+    var builderWithStore = new PackageBuilder(locRegistry, locMapping, locStore);
+    var builderNoStore = new PackageBuilder(locRegistry, locMapping, packageStore: null);
+
+    var locComponent = await builderWithStore.CreateClientAndComponentAsync(
+        Path.Combine(workRoot, "location-project"), "ClientLoc", "Widget", TargetType.IisLocal, "net8.0",
+        isSelfContained: false);
+
+    var locPublish = Path.Combine(workRoot, "location-publish");
+    Directory.CreateDirectory(Path.Combine(locPublish, "bin"));
+    File.WriteAllText(Path.Combine(locPublish, "bin", "App.dll"), "app-v1");
+    File.WriteAllText(Path.Combine(locPublish, "index.html"), "<html/>");
+
+    // Build WITHOUT a store → PackageLocation null, local .zip present.
+    var noStoreResult = await builderNoStore.BuildAsync(new PackageBuildRequest(
+        locComponent.ComponentId, "1.0.0", locPublish, Path.Combine(workRoot, "loc-no-store.zip")));
+    Check("builder without store leaves PackageLocation null", noStoreResult.Record.PackageLocation is null);
+    Check("builder without store still wrote the local .zip", File.Exists(noStoreResult.ZipPath));
+    Check("builder without store has no PackageStoreError", noStoreResult.PackageStoreError is null);
+
+    // Build WITH a store → PackageLocation set + .zip exists in the store.
+    var withStoreResult = await builderWithStore.BuildAsync(new PackageBuildRequest(
+        locComponent.ComponentId, "1.0.1", locPublish, Path.Combine(workRoot, "loc-with-store.zip")));
+    Check("builder with store sets PackageLocation", !string.IsNullOrEmpty(withStoreResult.Record.PackageLocation));
+    Check("PackageLocation points at an existing file in the store", File.Exists(withStoreResult.Record.PackageLocation!));
+    Check("PackageLocation is under the store root", withStoreResult.Record.PackageLocation!.StartsWith(Path.Combine(workRoot, "location-store")));
+    Check("builder with store has no PackageStoreError on success", withStoreResult.PackageStoreError is null);
+
+    // ---------------------------------------------------------------
     Console.WriteLine("== ProjectTargetFrameworkReader (publish framework auto-detect) ==");
     var tfmRoot = Path.Combine(workRoot, "tfm");
     Directory.CreateDirectory(tfmRoot);

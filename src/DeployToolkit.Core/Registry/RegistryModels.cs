@@ -125,6 +125,18 @@ public sealed class PackageRecord
     public PackageStatus Status { get; set; } = PackageStatus.Created;
     public DateTimeOffset? DeployedUtc { get; set; }
     public string? DeployedBy { get; set; }
+
+    /// <summary>
+    /// Where the built <c>delta.zip</c> physically lives — a UNC path
+    /// (<c>\\fileserver\DeployToolkit\Packages\...</c>), a local path, or a
+    /// URL. Set by the Packager after it uploads the .zip to the configured
+    /// package store (Option B: shared folder + registry links the package).
+    /// Null when no store is configured (the .zip lives only on the
+    /// builder's PC and must be copied to the deployer by hand — the
+    /// pre-Option-B behavior). The Deployer's "Pick from registry…"
+    /// flow reads the .zip straight from here.
+    /// </summary>
+    public string? PackageLocation { get; set; }
 }
 
 public sealed class DeploymentRunRecord
@@ -174,7 +186,16 @@ public interface IRegistryStore
 
     Task<IReadOnlyList<PackageRecord>> GetUndeployedPackagesAsync(string componentId);
 
-    Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest);
+    /// <summary>
+    /// Creates a new <see cref="PackageRecord"/> (Status = Created) for the
+    /// given component, serializing <paramref name="manifest"/> as the audit
+    /// <see cref="PackageRecord.ManifestJson"/>. The optional
+    /// <paramref name="packageLocation"/> is stored on the record so the
+    /// Deployer can find the .zip without the builder having to copy it by
+    /// hand (Option B: a shared folder path / UNC / URL where the .zip was
+    /// uploaded). Null when no package store is configured.
+    /// </summary>
+    Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest, string? packageLocation = null);
 
     Task MarkDeployedAsync(string packageId, string deployedBy, DateTimeOffset deployedUtc);
 

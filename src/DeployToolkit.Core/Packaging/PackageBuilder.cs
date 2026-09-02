@@ -36,7 +36,16 @@ public sealed record PackageBuildResult(
     ComponentManifest Manifest,
     string ZipPath,
     PackageRecord Record,
-    IReadOnlyList<PackageRecord> UnresolvedStalePackages);
+    IReadOnlyList<PackageRecord> UnresolvedStalePackages,
+    /// <summary>
+    /// Non-null when the local .zip was written successfully but the upload
+    /// to the shared package store (Option B) failed — the build still
+    /// succeeded (the local .zip is usable), but the Deployer on another
+    /// machine won't find it via the registry's PackageLocation and will need
+    /// a manual .zip copy. The UI surfaces this as a warning, not an error.
+    /// Null on a successful upload OR when no store is configured.
+    /// </summary>
+    string? PackageStoreError = null);
 
 /// <summary>
 /// Ties together folder resolution, baseline lookup, hashing/diffing, and
@@ -49,11 +58,25 @@ public sealed class PackageBuilder
 {
     private readonly IRegistryStore _registry;
     private readonly ILocalProjectMappingStore _mapping;
+    private readonly IPackageStore? _packageStore;
 
     public PackageBuilder(IRegistryStore registry, ILocalProjectMappingStore mapping)
+        : this(registry, mapping, packageStore: null) { }
+
+    /// <summary>
+    /// Constructs the builder with an optional <paramref name="packageStore"/>.
+    /// When set, <see cref="BuildAsync"/> uploads the .zip to the store after
+    /// writing it locally and records the returned location on the
+    /// <see cref="PackageRecord.PackageLocation"/> (Option B: shared folder +
+    /// registry links the package, so the Deployer can fetch it without the
+    /// builder copying the .zip by hand). When null, the .zip lives only on
+    /// the builder's PC (the pre-Option-B behavior).
+    /// </summary>
+    public PackageBuilder(IRegistryStore registry, ILocalProjectMappingStore mapping, IPackageStore? packageStore)
     {
         _registry = registry;
         _mapping = mapping;
+        _packageStore = packageStore;
     }
 
     /// <summary>
@@ -189,9 +212,41 @@ public sealed class PackageBuilder
             request.DbScriptSourcePaths,
             request.OutputZipPath);
 
-        var record = await _registry.CreatePackageAsync(request.ComponentId, manifest);
+        // Option B: upload the .zip to the configured package store so the
+        // Deployer (on another machine) can fetch it via the registry row's
+        // PackageLocation without the builder copying the file by hand.
+        // Best-effort: a failure here (unreachable share, auth refused) does
+        // NOT undo the local write or fail the build — the local .zip is
+        // already on disk and usable. The PackageLocation stays null and the
+        // outcome is reported on the PackageBuildResult so the UI can warn
+        // the user (the Deployer would fall back to the manual .zip copy).
+        // When no store is configured, this is skipped entirely.
+        string? packageLocation = null;
+        string? packageStoreError = null;
+        if (_packageStore is not null)
+        {
+            try
+            {
+                // The store may be a network share — upload off the calling
+                // thread so the UI stays responsive (same reason the publish-
+                // output hashing runs off-thread).
+                packageLocation = await _packageStore.UploadAsync(
+                    request.OutputZipPath, component.Name, request.Version);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                // Network share unreachable / auth refused / path invalid.
+                // The local .zip is fine; the Deployer will need a manual copy.
+                packageStoreError = ex.Message;
+            }
+        }
 
-        return new PackageBuildResult(manifest, request.OutputZipPath, record, stalePackages);
+        var record = await _registry.CreatePackageAsync(request.ComponentId, manifest, packageLocation);
+
+        var buildResult = new PackageBuildResult(manifest, request.OutputZipPath, record, stalePackages);
+        if (packageStoreError is not null)
+            buildResult = buildResult with { PackageStoreError = packageStoreError };
+        return buildResult;
     }
 
     /// <summary>

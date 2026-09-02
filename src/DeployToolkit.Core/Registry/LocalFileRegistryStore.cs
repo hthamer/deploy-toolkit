@@ -219,7 +219,7 @@ public sealed class LocalFileRegistryStore : IRegistryStore
         return packages.Where(p => p.Status == PackageStatus.Created).OrderBy(p => p.CreatedUtc).ToList();
     }
 
-    public async Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest)
+    public async Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest, string? packageLocation = null)
     {
         await _lock.WaitAsync();
         try
@@ -236,6 +236,7 @@ public sealed class LocalFileRegistryStore : IRegistryStore
                 ManifestJson = ManifestSerializer.Serialize(manifest),
                 GitCommitSha = manifest.GitCommitSha,
                 Status = PackageStatus.Created,
+                PackageLocation = packageLocation,
             };
 
             packages.Add(record);
