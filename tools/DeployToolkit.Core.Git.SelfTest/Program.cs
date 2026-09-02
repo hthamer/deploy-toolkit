@@ -122,6 +122,20 @@ try
     // successful build can write it back to the client's GitRepositoryUrl.
     Check("RemoteUrl is the origin URL", !string.IsNullOrEmpty(r1.RemoteUrl) && r1.RemoteUrl!.Contains(bare));
 
+    // ---------------------------------------------------------------- t1b
+    Console.WriteLine("== t1b: GitRemoteUrlReader reads URL + branch + HEAD (no network) ==");
+    var info = GitRemoteUrlReader.Read(repoA);
+    Check("GitRemoteUrlReader returns non-null for a git working folder", info is not null);
+    Check("RemoteUrl matches the bare origin", info!.RemoteUrl is not null && info.RemoteUrl.Contains(bare));
+    Check("BranchName matches the clone branch", info.BranchName == branch);
+    Check("HeadSha matches the seed commit", info.HeadSha == seedSha);
+    Check("GitRemoteUrlReader returns null for a non-git folder",
+        GitRemoteUrlReader.Read(Path.Combine(workRoot, "not-a-repo")) is null);
+    Check("GitRemoteUrlReader returns null for a missing path",
+        GitRemoteUrlReader.Read(Path.Combine(workRoot, "missing")) is null);
+    Check("GitRemoteUrlReader returns null for null/empty path",
+        GitRemoteUrlReader.Read(null!) is null && GitRemoteUrlReader.Read("") is null);
+
     // ---------------------------------------------------------------- t2
     Console.WriteLine("== t2: FetchOnly sees new work but never moves HEAD ==");
     var feature1Sha = CommitFile(repoB, "OTHER.md", "other v1\n");

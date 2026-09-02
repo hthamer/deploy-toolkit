@@ -21,11 +21,18 @@ internal sealed class StepFolder : WizardStep
     private readonly Button _changeComponentButton;
     private readonly Label _gitSummary;
     private readonly Label _componentSummary;
+    private readonly CheckBox _fetchPullBox;
 
     /// <summary>Guards against a stale (cancelled/abandoned) folder run
     /// clobbering a newer selection's results when its background work
     /// finally completes.</summary>
     private int _selectRunId;
+
+    /// <summary>Lightweight, network-free repo info (remote URL + branch +
+    /// HEAD) read immediately when a folder is selected, so the Git box can
+    /// show the repo URL before/without running the fetch+pull sync. Null
+    /// when the folder isn't a git repo (or the read failed).</summary>
+    private GitRepoInfo? _repoInfo;
 
     public StepFolder(PackagerWizardForm wizard, PackageDraft draft)
         : base(wizard, draft)
@@ -62,13 +69,28 @@ internal sealed class StepFolder : WizardStep
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };
+
+        // "Fetch & Pull Remote Changes" checkbox — true by default. When
+        // unchecked, selecting a git folder skips the fetch+pull sync
+        // entirely (no network) and the package uses the current local
+        // state as-is. The repo URL + branch + HEAD are still shown (read
+        // locally, no network) so the user sees what they're packaging.
+        _fetchPullBox = new CheckBox
+        {
+            Text = "Fetch & Pull Remote Changes",
+            Checked = true,
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            Margin = new Padding(0, 2, 0, 4),
+        };
+
         var gitGroup = new GroupBox
         {
             Text = "Git",
             Dock = DockStyle.Fill,
             AutoSize = true,
             Padding = new Padding(8),
-            Controls = { _gitSummary },
+            Controls = { _gitSummary, _fetchPullBox },
         };
         layout.Controls.Add(gitGroup);
 
@@ -138,9 +160,21 @@ internal sealed class StepFolder : WizardStep
         _browseButton.Enabled = false;
         try
         {
-            // ---- git sync (GitSyncPresenter already Guard-wraps the IO;
-            //      the sync itself is cancellable via the busy dialog and
-            //      probes the remote's reachability before fetching) ----
+            // Read the repo's basic facts (remote URL + branch + HEAD)
+            // immediately — network-free — so the Git box shows the repo
+            // URL the moment the folder is picked, before any fetch+pull.
+            // Stored in _repoInfo so UpdateSummary can render it even when
+            // the sync is skipped (non-git folder, or checkbox unchecked).
+            _repoInfo = await Task.Run(() => GitRemoteUrlReader.Read(folder));
+            if (Stale()) return;
+            UpdateGitSummary(); // show the URL + branch + HEAD right away
+
+            // ---- git sync (gated by the "Fetch & Pull Remote Changes" checkbox) ----
+            // The checkbox defaults ON. When OFF, skip the fetch+pull entirely
+            // — the package uses the current local state as-is (the repo URL +
+            // branch + HEAD above are still shown so the user sees what they
+            // package). When the folder isn't a git repo, the user confirms
+            // "continue without git sync" as before.
             GitSyncResult? git = null;
             if (!IsGitWorkingFolder(folder))
             {
@@ -149,6 +183,13 @@ internal sealed class StepFolder : WizardStep
                     "Continue without git sync? (no commit SHA will be recorded)");
                 if (proceed != DialogResult.Yes)
                     return;
+            }
+            else if (!_fetchPullBox.Checked)
+            {
+                // Git folder, but the user opted out of fetch+pull. Build a
+                // GitSyncResult from the local repo info so the manifest still
+                // records the branch + HEAD SHA (no commit movement possible).
+                git = BuildLocalOnlySyncResult(_repoInfo);
             }
             else
             {
@@ -267,25 +308,7 @@ internal sealed class StepFolder : WizardStep
         // publish profile UX where the path is visible next to Browse.
         _folderBox.Text = Draft.FolderPath ?? string.Empty;
 
-        if (Draft.GitSync is { } sync)
-        {
-            _gitSummary.ForeColor = Color.Black;
-            _gitSummary.Text = $"Branch: {sync.BranchName}    HEAD: {ShortSha(sync.HeadSha)}\n" +
-                               $"Sync outcome: {DescribeOutcome(sync.Outcome, sync.Pulled)}" +
-                               (string.IsNullOrEmpty(sync.RemoteUrl)
-                                   ? string.Empty
-                                   : $"\nRemote: {sync.RemoteUrl}");
-        }
-        else if (Draft.FolderPath is not null)
-        {
-            _gitSummary.ForeColor = Color.DimGray;
-            _gitSummary.Text = "No git sync — no commit SHA will be recorded for this package.";
-        }
-        else
-        {
-            _gitSummary.ForeColor = Color.DimGray;
-            _gitSummary.Text = "No folder selected yet.";
-        }
+        UpdateGitSummary();
 
         if (Draft.Component is { } component)
         {
@@ -300,6 +323,75 @@ internal sealed class StepFolder : WizardStep
         }
 
         _changeComponentButton.Enabled = Draft.FolderPath is not null && !Wizard.IsDisposed;
+    }
+
+    /// <summary>Renders the Git box. Prefers the sync result's RemoteUrl
+    /// (authoritative — the sync actually talked to the remote); falls back
+    /// to the network-free _repoInfo read (so the URL shows immediately on
+    /// folder selection, even when the sync was skipped or hasn't run yet).
+    /// Shows "no git sync" when neither is available but a folder is picked.
+    /// </summary>
+    private void UpdateGitSummary()
+    {
+        // A finished sync result wins — it carries the branch + HEAD the
+        // package is actually built from, plus the sync outcome line.
+        if (Draft.GitSync is { } sync)
+        {
+            _gitSummary.ForeColor = Color.Black;
+            _gitSummary.Text = $"Branch: {sync.BranchName}    HEAD: {ShortSha(sync.HeadSha)}\n" +
+                               $"Sync outcome: {DescribeOutcome(sync.Outcome, sync.Pulled)}" +
+                               (string.IsNullOrEmpty(sync.RemoteUrl)
+                                   ? (string.IsNullOrEmpty(_repoInfo?.RemoteUrl) ? string.Empty : $"\nRemote: {_repoInfo!.RemoteUrl}")
+                                   : $"\nRemote: {sync.RemoteUrl}");
+            return;
+        }
+
+        // No sync result — show the local repo info (URL + branch + HEAD)
+        // read immediately on folder selection, so the user sees the repo
+        // URL right away even before/without running fetch+pull.
+        if (_repoInfo is { } info)
+        {
+            _gitSummary.ForeColor = Color.Black;
+            _gitSummary.Text = $"Branch: {info.BranchName}    HEAD: {ShortSha(info.HeadSha)}\n" +
+                               (string.IsNullOrEmpty(info.RemoteUrl)
+                                   ? "No remote configured."
+                                   : $"Remote: {info.RemoteUrl}") +
+                               (_fetchPullBox.Checked ? string.Empty : "\nSync skipped (Fetch & Pull unchecked) — packaging local state as-is.");
+            return;
+        }
+
+        if (Draft.FolderPath is not null)
+        {
+            _gitSummary.ForeColor = Color.DimGray;
+            _gitSummary.Text = "No git sync — no commit SHA will be recorded for this package.";
+        }
+        else
+        {
+            _gitSummary.ForeColor = Color.DimGray;
+            _gitSummary.Text = "No folder selected yet.";
+        }
+    }
+
+    /// <summary>Builds a <see cref="GitSyncResult"/> from the local-only repo
+    /// info (no fetch, no pull) used when the user unchecked
+    /// "Fetch & Pull Remote Changes". Carries the branch + HEAD SHA so the
+    /// manifest still records what was packaged; outcome is UpToDate (no
+    /// commit movement possible) and the dirty/untracked lists are empty
+    /// (the sync never inspected the tree — the user explicitly opted out).
+    /// </summary>
+    private static GitSyncResult? BuildLocalOnlySyncResult(GitRepoInfo? info)
+    {
+        if (info is null)
+            return null;
+        return new GitSyncResult(
+            RepositoryPath: string.Empty,
+            BranchName: info.BranchName,
+            HeadSha: info.HeadSha,
+            HeadShaBeforeSync: info.HeadSha,
+            Outcome: GitSyncOutcome.UpToDate,
+            UncommittedFiles: Array.Empty<string>(),
+            UntrackedFiles: Array.Empty<string>(),
+            RemoteUrl: info.RemoteUrl);
     }
 
     private async Task LoadClientNameAsync(string componentId, string clientId)
