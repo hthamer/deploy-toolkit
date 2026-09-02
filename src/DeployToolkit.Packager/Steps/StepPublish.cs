@@ -388,10 +388,12 @@ internal sealed class StepPublish : WizardStep
         // #4: seed the version box with the auto-incremented last package
         // version (e.g. previous 1.1.1 -> suggested 1.1.2). Only when the
         // user hasn't already typed one — their manual edit always wins.
+        // When there's no previous package (first build for this component),
+        // fall back to "1.0" so the user has a sensible starting point.
         if (!string.IsNullOrEmpty(lastPackageVersion))
             _versionBox.Text = VersionIncrementer.Increment(lastPackageVersion);
         else
-            _versionBox.Text = Draft.Version ?? string.Empty;
+            _versionBox.Text = string.IsNullOrEmpty(Draft.Version) ? "1.0" : Draft.Version;
         UpdateProjectError();
         UpdateSettingsSummary();
         Wizard.OnDraftChanged();

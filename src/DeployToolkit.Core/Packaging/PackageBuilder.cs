@@ -248,7 +248,10 @@ public sealed class PackageBuilder
         // already on disk and usable. The PackageLocation stays null and the
         // outcome is reported on the PackageBuildResult so the UI can warn
         // the user (the Deployer would fall back to the manual .zip copy).
-        // When no store is configured, this is skipped entirely.
+        // When no store is configured, the LOCAL output path is recorded as
+        // the PackageLocation so the registry always knows where the .zip is
+        // (user request: "the package location is not stored in the database —
+        // even if it's local path, store it").
         string? packageLocation = null;
         string? packageStoreError = null;
         if (_packageStore is not null)
@@ -268,6 +271,13 @@ public sealed class PackageBuilder
                 packageStoreError = ex.Message;
             }
         }
+
+        // Always record where the .zip lives — the shared-store path when the
+        // upload succeeded, otherwise the local output path. This way the
+        // registry always has a PackageLocation (never null), and the Deployer's
+        // "Pick from registry…" can always find the .zip (on the builder's PC
+        // for local-only, on the share for shared).
+        packageLocation ??= request.OutputZipPath;
 
         var record = await _registry.CreatePackageAsync(request.ComponentId, manifest, packageLocation);
 

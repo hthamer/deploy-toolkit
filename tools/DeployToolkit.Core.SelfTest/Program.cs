@@ -1357,10 +1357,13 @@ try
     File.WriteAllText(Path.Combine(locPublish, "bin", "App.dll"), "app-v1");
     File.WriteAllText(Path.Combine(locPublish, "index.html"), "<html/>");
 
-    // Build WITHOUT a store → PackageLocation null, local .zip present.
+    // Build WITHOUT a store → PackageLocation = the local .zip path (always
+    // recorded now, even when local — user request: "even if it's local path,
+    // store it"). Local .zip present.
     var noStoreResult = await builderNoStore.BuildAsync(new PackageBuildRequest(
         locComponent.ComponentId, "1.0.0", locPublish, Path.Combine(workRoot, "loc-no-store.zip")));
-    Check("builder without store leaves PackageLocation null", noStoreResult.Record.PackageLocation is null);
+    Check("builder without store records the local path as PackageLocation",
+        noStoreResult.Record.PackageLocation == noStoreResult.ZipPath);
     Check("builder without store still wrote the local .zip", File.Exists(noStoreResult.ZipPath));
     Check("builder without store has no PackageStoreError", noStoreResult.PackageStoreError is null);
 

@@ -151,7 +151,12 @@ internal sealed class StepBuild : WizardStep
         }
 
         _zipPathBox.Text = Draft.OutputZipPath ?? DefaultZipPath();
-        UpdateLocalPathWarning();
+        // Show the local-path popup on entry so the user can't miss it (the
+        // default path is usually a local Documents folder, so this warns
+        // about it before they even click Build). Only prompt when a path
+        // is present.
+        if (!string.IsNullOrWhiteSpace(_zipPathBox.Text))
+            ShowLocalPathWarningPopup();
         Wizard.OnDraftChanged();
     }
 
@@ -467,49 +472,75 @@ internal sealed class StepBuild : WizardStep
         {
             _zipPathBox.Text = picker.FileName;
             Draft.OutputZipPath = picker.FileName;
-            UpdateLocalPathWarning();
+            ShowLocalPathWarningPopup();
         }
     }
 
-    /// <summary>Shows the "local folder" warning when the output path is NOT
+    /// <summary>Shows a BLOCKING popup warning when the output path is NOT
     /// under the shared package store (so the user knows the local copy won't
-    /// be visible to other team members). Hidden when no store is configured
-    /// (local-only is the only option) or when the path is under the store
-    /// root. The shared-store upload (if configured) still happens at build
-    /// time regardless of the local path — the warning is about the LOCAL
-    /// copy's visibility, not the build outcome.</summary>
-    private void UpdateLocalPathWarning()
+    /// be visible to other team members). The user must confirm to proceed.
+    /// Also keeps the persistent warning label visible as a reminder.
+    ///
+    /// Cases:
+    ///  - Store configured + path under store → no warning (shared).
+    ///  - Store configured + path NOT under store → popup: "this local folder
+    ///    will not be shared... the package will still be uploaded to the
+    ///    shared store on build, but the local copy at <path> is only on this
+    ///    PC. Continue?"  [Yes/No]
+    ///  - No store configured + path is local → popup: "no shared package
+    ///    store is configured — this .zip will live ONLY on this PC at <path>
+    ///    and other team members won't be able to find it via the Deployer.
+    ///    Configure a shared store in Registry Connection… for team-wide
+    ///    access. Continue anyway?"  [Yes/No]
+    /// The popup shows ONCE per path change (so re-entering the step without
+    /// changing the path doesn't re-prompt). Returns true when the user
+    /// confirmed (or no warning was needed); false when they declined.</summary>
+    private bool ShowLocalPathWarningPopup()
     {
         var storeRoot = Wizard.PackageStoreRootPath;
-        if (string.IsNullOrWhiteSpace(storeRoot))
-        {
-            _localPathWarningLabel.Visible = false;
-            return;
-        }
-
         var path = _zipPathBox.Text.Trim();
         if (path.Length == 0)
-        {
-            _localPathWarningLabel.Visible = false;
-            return;
-        }
+            return true; // nothing to warn about yet
 
-        // Normalize both sides for the prefix check (case-insensitive on
-        // Windows). A path under the store root = no warning; anywhere else
-        // = warn that the local copy won't be shared.
         var dir = Path.GetDirectoryName(path) ?? path;
-        var underStore = dir.StartsWith(storeRoot.Trim(), StringComparison.OrdinalIgnoreCase);
+        var storeConfigured = !string.IsNullOrWhiteSpace(storeRoot);
+        var underStore = storeConfigured
+            && dir.StartsWith(storeRoot!.Trim(), StringComparison.OrdinalIgnoreCase);
+
         if (underStore)
         {
             _localPathWarningLabel.Visible = false;
+            return true; // shared — no warning
+        }
+
+        // Build the warning message + keep the label as a reminder.
+        string message;
+        if (storeConfigured)
+        {
+            message =
+                $"The selected output folder is NOT under the shared package store:\n\n  {dir}\n\n" +
+                "This local folder will not be shared and is not visible to other team members.\n" +
+                "The package will still be uploaded to the shared store on build — other developers " +
+                "fetch it from there via the Deployer.\n\nContinue with this local path?";
         }
         else
         {
-            _localPathWarningLabel.Text =
-                "Note: this local folder will not be shared and is not visible to other team members. " +
-                "The package will still be uploaded to the shared store on build — other developers fetch it from there via the Deployer.";
-            _localPathWarningLabel.Visible = true;
+            message =
+                $"No shared package store is configured.\n\n" +
+                $"This .zip will live ONLY on this PC at:\n\n  {path}\n\n" +
+                "Other team members will NOT be able to find it via the Deployer's " +
+                "\"Pick from registry…\" flow.\n\n" +
+                "For team-wide access, configure a shared package store in " +
+                "Registry Connection… (a network share / UNC path).\n\nContinue with this local path?";
         }
+
+        _localPathWarningLabel.Text = storeConfigured
+            ? "Note: this local folder will not be shared — not visible to other team members. (The package is also uploaded to the shared store on build.)"
+            : "Note: no shared package store configured — this .zip is local only and not visible to other team members.";
+        _localPathWarningLabel.Visible = true;
+
+        var choice = AppTheme.Confirm(this, message, "Local output path");
+        return choice == DialogResult.Yes;
     }
 
     private void OpenOutputFolder()
