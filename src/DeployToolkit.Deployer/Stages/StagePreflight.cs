@@ -1,6 +1,8 @@
 using DeployToolkit.AppKit;
 using DeployToolkit.Core.Targets;
 using DeployToolkit.Core.Targets.Plesk;
+using Microsoft.Data.SqlClient;
+using System.Text.Json;
 
 namespace DeployToolkit.Deployer.Stages;
 
@@ -21,6 +23,7 @@ internal sealed class StagePreflight : StagePanel
     private readonly TableLayoutPanel _iisPanel;
     private TextBox _siteRootBox = null!;
     private TextBox _appSettingsBox = null!;
+    private TextBox _dbConnBox = null!;
 
     // Azure inputs
     private readonly TableLayoutPanel _azurePanel;
@@ -166,6 +169,20 @@ internal sealed class StagePreflight : StagePanel
         panel.Controls.Add(AppTheme.MakeSectionLabel("appsettings.json (the manifest's delta is merged into it)"));
         _appSettingsBox = new TextBox { Dock = DockStyle.Fill };
         panel.Controls.Add(_appSettingsBox);
+
+        // DB connection string — auto-read from appsettings.json's
+        // ConnectionStrings section (.NET Core apps); for .NET Framework
+        // WebForms the user types it manually (from web.config).
+        panel.Controls.Add(AppTheme.MakeSectionLabel("Database connection string (auto-read from appsettings.json or type manually)"));
+        _dbConnBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
+        panel.Controls.Add(_dbConnBox);
+
+        // Auto-read button — parses the ConnectionStrings:Default key from
+        // the appsettings.json at the site root.
+        var readDbButton = new Button { Text = "Read from appsettings…" };
+        AppTheme.StyleButton(readDbButton);
+        readDbButton.Click += (_, _) => ReadDbConnectionString();
+        panel.Controls.Add(readDbButton);
 
         return panel;
     }
@@ -361,6 +378,24 @@ internal sealed class StagePreflight : StagePanel
                     checks.Add((false, $"appsettings path is not usable: {appSettings} ({ex.Message})"));
                 }
             }
+
+            // Q4: DB size check — when the package has DB scripts and a
+            // connection string is set, connect and check the total DB size
+            // (sys.master_files). If > 2GB, warn the user (the full schema+data
+            // backup script may be large/slow). If < 2GB, confirm the backup
+            // will be generated at deploy time. If no DB scripts, skip.
+            if (context.Manifest.DbScripts.Count > 0)
+            {
+                var connStr = context.DbConnectionString;
+                if (string.IsNullOrWhiteSpace(connStr))
+                {
+                    checks.Add((true, "DB scripts present but no connection string — enter it above (Read from appsettings… or type manually) to enable the DB backup at deploy time."));
+                }
+                else
+                {
+                    checks.Add(CheckDatabaseSize(connStr));
+                }
+            }
         }
         else if (type == TargetType.AzureAppService)
         {
@@ -488,6 +523,9 @@ internal sealed class StagePreflight : StagePanel
                                       ?? (string.IsNullOrWhiteSpace(_siteRootBox.Text)
                                           ? null
                                           : Path.Combine(_siteRootBox.Text.Trim(), "appsettings.json"));
+            // Store the DB connection string on the context so the deploy
+            // step doesn't need to ask for it again.
+            context.DbConnectionString = NullIfEmpty(_dbConnBox.Text);
         }
         else if (type == TargetType.AzureAppService)
         {
@@ -582,6 +620,111 @@ internal sealed class StagePreflight : StagePanel
     {
         var trimmed = text?.Trim();
         return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
+
+    /// <summary>Reads the ConnectionStrings section from the appsettings.json
+    /// at the site root and fills the DB connection string field. For .NET
+    /// Core apps, the JSON format is:
+    /// <code>{ "ConnectionStrings": { "Default": "Server=...;Database=..." } }</code>
+    /// Picks the first connection string (or "Default" if present). For .NET
+    /// Framework WebForms (web.config), the user types it manually.</summary>
+    private void ReadDbConnectionString()
+    {
+        var appSettingsPath = string.IsNullOrWhiteSpace(_appSettingsBox.Text)
+            ? (string.IsNullOrWhiteSpace(_siteRootBox.Text) ? null : Path.Combine(_siteRootBox.Text.Trim(), "appsettings.json"))
+            : _appSettingsBox.Text.Trim();
+
+        if (string.IsNullOrEmpty(appSettingsPath) || !File.Exists(appSettingsPath))
+        {
+            AppTheme.Error(this, $"appsettings.json not found at: {appSettingsPath ?? "(no path set)"}.\n\n" +
+                "For .NET Framework WebForms apps, the connection string is in web.config — type it manually.");
+            return;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(appSettingsPath);
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("ConnectionStrings", out var connStrings) || connStrings.ValueKind != JsonValueKind.Object)
+            {
+                AppTheme.Error(this, "No 'ConnectionStrings' section found in appsettings.json.\n\n" +
+                    "For .NET Framework WebForms, the connection string is in web.config — type it manually.");
+                return;
+            }
+
+            // Prefer "Default" > "DefaultConnection" > first property.
+            string? conn = null;
+            if (connStrings.TryGetProperty("Default", out var defaultProp) && defaultProp.ValueKind == JsonValueKind.String)
+                conn = defaultProp.GetString();
+            else if (connStrings.TryGetProperty("DefaultConnection", out var dcProp) && dcProp.ValueKind == JsonValueKind.String)
+                conn = dcProp.GetString();
+            else
+            {
+                foreach (var prop in connStrings.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.String)
+                    {
+                        conn = prop.Value.GetString();
+                        break;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(conn))
+            {
+                AppTheme.Error(this, "The ConnectionStrings section has no string values.");
+                return;
+            }
+
+            _dbConnBox.Text = conn;
+            _resultLabel.ForeColor = Color.ForestGreen;
+            _resultLabel.Text = "Database connection string read from appsettings.json ✓";
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            AppTheme.Error(this, $"Could not read appsettings.json: {ex.Message}");
+        }
+    }
+
+    /// <summary>Checks the total database size (all data + log files) via
+    /// <c>sys.master_files</c>. Returns a pass + the size info when < 2GB
+    /// (the backup script will be generated at deploy time), or a warning
+    /// when > 2GB (the backup script may be large/slow — the user is warned
+    /// but the check still passes). Connection failures fail the check.</summary>
+    private static (bool Passed, string Text) CheckDatabaseSize(string connectionString)
+    {
+        try
+        {
+            using var conn = new SqlConnection(connectionString);
+            conn.Open();
+
+            // Total size = SUM(size * 8 / 1024) in MB from sys.master_files
+            // (size is in 8KB pages; *8 = KB; /1024 = MB). Filtered by the
+            // connection's database.
+            using var cmd = new SqlCommand(
+                "SELECT SUM(size) * 8 / 1024 FROM sys.master_files WHERE database_id = DB_ID(DB_NAME())",
+                conn);
+            var result = cmd.ExecuteScalar();
+            var sizeMB = result is DBNull or null ? 0 : Convert.ToInt64(result);
+            var sizeGB = sizeMB / 1024.0;
+
+            if (sizeGB > 2.0)
+            {
+                return (true, $"[WARN] Database size: {sizeGB:F1} GB — exceeds the 2GB threshold. " +
+                    $"The full schema+data backup script may be large/slow. The backup will still be generated.");
+            }
+
+            return (true, $"Database size: {sizeGB:F2} GB (< 2GB) — full schema+data backup script will be generated at deploy time.");
+        }
+        catch (SqlException ex)
+        {
+            return (false, $"Database size check failed (connection error): {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"Database size check failed: {ex.Message}");
+        }
     }
 
     private static string FormatBytes(long bytes) =>
