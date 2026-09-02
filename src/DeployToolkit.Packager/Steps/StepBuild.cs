@@ -587,10 +587,20 @@ internal sealed class StepBuild : WizardStep
         var componentName = component?.Name ?? "Component";
         var version = string.IsNullOrWhiteSpace(Draft.Version) ? "0.0.0" : Draft.Version!;
 
-        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        if (string.IsNullOrWhiteSpace(documents))
-            documents = Environment.CurrentDirectory;
+        // When a shared package store is configured, default the output path
+        // to the store so the .zip lands there directly (the user doesn't
+        // have to browse to it). When no store is configured, fall back to the
+        // user's Documents folder (local-only — the popup warns about it).
+        var root = Wizard.PackageStoreRootPath;
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        {
+            var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            if (string.IsNullOrWhiteSpace(documents))
+                documents = Environment.CurrentDirectory;
+            root = documents;
+        }
 
-        return Path.Combine(documents, "DeployToolkit", "Packages", clientName, componentName, $"{componentName}-{version}.zip");
+        // Layout: <root>/DeployToolkit/Packages/<client>/<component>/<component>-<version>.zip
+        return Path.Combine(root, "DeployToolkit", "Packages", clientName, componentName, $"{componentName}-{version}.zip");
     }
 }
