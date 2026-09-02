@@ -205,7 +205,14 @@ public static class MigrationScriptGenerator
         sb.Append(" --output ").Append(Quote(outputFile));
         if (idempotent)
             sb.Append(" --idempotent");
-        sb.Append(" --no-build"); // the publish step already built the project; skip the redundant rebuild
+        // NOTE: do NOT add --no-build. The DB project (a class library, usually
+        // a different project than the web app the publish step built) must be
+        // built so dotnet ef can load the compiled migrations from its obj/.
+        // With --no-build and no prior build of the DB project, dotnet ef
+        // exits 0 but writes an empty script → the tool reported "unknown
+        // error" because Success required a non-empty output. Letting dotnet ef
+        // build is the safe default; the extra build is seconds for a class
+        // library.
         return sb.ToString();
     }
 
@@ -349,8 +356,28 @@ public static class MigrationScriptGenerator
         try { if (File.Exists(outputFile)) File.Delete(outputFile); }
         catch { /* temp cleanup is best-effort */ }
 
+        var success = !timedOut && exitCode == 0 && scriptText.Length > 0;
+
+        // When the process exited 0 but the output is empty (dotnet ef wrote
+        // nothing — e.g. from==to, or a silent issue), give a clear, actionable
+        // message instead of the opaque "unknown error" the caller would
+        // otherwise build from a null errorSummary. Include the captured
+        // stdout/stderr tail so the user sees what dotnet ef printed.
+        if (!success && errorSummary is null)
+        {
+            var tail = output.Skip(Math.Max(0, output.Count - 40));
+            var tailText = string.Join(Environment.NewLine, tail);
+            errorSummary = exitCode == 0
+                ? (string.IsNullOrWhiteSpace(tailText)
+                    ? "dotnet ef exited successfully but produced an empty script. " +
+                      "This usually means the from/to migrations are the same (nothing to script) " +
+                      "or the DB project has no migrations. Check the selected migrations in the grid."
+                    : tailText)
+                : (string.IsNullOrWhiteSpace(tailText) ? "dotnet ef failed with no output." : tailText);
+        }
+
         return new MigrationScriptResult(
-            Success: !timedOut && exitCode == 0 && scriptText.Length > 0,
+            Success: success,
             ScriptText: scriptText,
             ExitCode: exitCode,
             ErrorSummary: errorSummary);

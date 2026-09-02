@@ -366,12 +366,12 @@ try
     var args1 = MigrationScriptGenerator.BuildArguments(
         @"C:\repo\DB Project", @"C:\out\script.sql", fromMigration: null, toMigration: null);
     Check("full-schema script (no from/to) — quotes spaced project path",
-        args1 == "ef migrations script --project \"C:\\repo\\DB Project\" --output \"C:\\out\\script.sql\" --no-build");
+        args1 == "ef migrations script --project \"C:\\repo\\DB Project\" --output \"C:\\out\\script.sql\");
 
     var args2 = MigrationScriptGenerator.BuildArguments(
         @"C:\repo\DB", @"C:\out\script.sql", fromMigration: "20260101120000_InitialCreate", toMigration: "20260301120000_AddIndexes");
     Check("delta script — from/to migrations precede --project",
-        args2 == "ef migrations script 20260101120000_InitialCreate 20260301120000_AddIndexes --project C:\\repo\\DB --output C:\\out\\script.sql --no-build");
+        args2 == "ef migrations script 20260101120000_InitialCreate 20260301120000_AddIndexes --project C:\\repo\\DB --output C:\\out\\script.sql");
 
     var argEx1 = false;
     try { MigrationScriptGenerator.BuildArguments("", "out.sql", null, null); }
@@ -387,8 +387,8 @@ try
     // middle added later" case).
     var args3 = MigrationScriptGenerator.BuildArguments(
         @"C:\repo\DB", @"C:\out\script.sql", "20260101_Initial", "20260301_AddIndexes", idempotent: true);
-    Check("idempotent flag adds --idempotent before --no-build",
-        args3.Contains("--idempotent") && args3.EndsWith("--no-build"));
+    Check("idempotent flag adds --idempotent",
+        args3.Contains("--idempotent"));
 
     Console.WriteLine();
     Console.WriteLine("Note: SqlServerScriptRunner connection-string path is compile-verified only");
