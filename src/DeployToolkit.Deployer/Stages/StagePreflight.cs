@@ -66,8 +66,11 @@ internal sealed class StagePreflight : StagePanel
         _azurePanel = BuildAzurePanel();
         _pleskPanel = BuildPleskPanel();
         layout.Controls.Add(_iisPanel);
-        layout.Controls.Add(_azurePanel);
-        layout.Controls.Add(_pleskPanel);
+        // Azure/Plesk panels are hidden (user: "for now make it only IIS").
+        // They're still constructed so the fields exist for when they're
+        // re-enabled later, but never added to the visible layout.
+        _azurePanel.Visible = false;
+        _pleskPanel.Visible = false;
 
         var checkButton = new Button { Text = "Run pre-flight checks" };
         AppTheme.StyleButton(checkButton);
@@ -104,8 +107,8 @@ internal sealed class StagePreflight : StagePanel
 
         var type = context.TargetType;
         _iisPanel.Visible = type == TargetType.IisLocal;
-        _azurePanel.Visible = type == TargetType.AzureAppService;
-        _pleskPanel.Visible = type == TargetType.Plesk;
+        _azurePanel.Visible = false; // hidden (IIS only for now)
+        _pleskPanel.Visible = false; // hidden (IIS only for now)
 
         if (type == TargetType.IisLocal)
         {
@@ -117,28 +120,14 @@ internal sealed class StagePreflight : StagePanel
                     : Path.Combine(_siteRootBox.Text.Trim(), "appsettings.json");
             }
         }
-        else if (type == TargetType.AzureAppService)
-        {
-            if (_kuduSiteBox.Text.Trim().Length == 0)
-                _kuduSiteBox.Text = context.Component?.AzureAppServiceName ?? string.Empty;
-            if (_armResourceGroupBox.Text.Trim().Length == 0)
-                _armResourceGroupBox.Text = context.Component?.AzureResourceGroup ?? string.Empty;
-            if (_armSiteBox.Text.Trim().Length == 0)
-                _armSiteBox.Text = _kuduSiteBox.Text.Trim();
-            // Settings application defaults to the manifest's shape: nothing
-            // to apply → OFF; a delta present → ON (user can uncheck).
-            _armCheckBox.Checked = context.Manifest.AppSettingsDelta.Count > 0;
-        }
-        else if (type == TargetType.Plesk)
-        {
-            if (_pleskHostBox.Text.Trim().Length == 0)
-                _pleskHostBox.Text = context.Component?.PleskHost ?? string.Empty;
-            if (_pleskSiteIdBox.Text.Trim().Length == 0)
-                _pleskSiteIdBox.Text = context.Component?.PleskSiteId ?? string.Empty;
-        }
 
         _resultLabel.ForeColor = Color.DimGray;
-        _resultLabel.Text = "Fill the inputs above, then run the checks.";
+        _resultLabel.Text = "Running pre-flight checks automatically…";
+
+        // Q2: auto-run pre-flight on entering the step (after the IIS app is
+        // selected in step 2 and the user clicks Next). No manual button
+        // needed — the checks run automatically.
+        Guard.FireAndForget(Shell, "Running pre-flight checks…", RunChecksAsync);
     }
 
     // ---------------------------------------------------------------
