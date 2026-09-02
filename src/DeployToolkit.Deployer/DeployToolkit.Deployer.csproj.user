@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup />
+  <ItemGroup>
+    <Compile Update="DbScriptsConnectionPrompt.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="IisTargetPickerDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="MainForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="RegistryPackagePickerDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="Stages\StageBackup.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Stages\StageDeploy.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Stages\StageLoadPackage.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Stages\StagePanel.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Stages\StagePreflight.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Stages\StageResolveTarget.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="TargetTypeDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+  </ItemGroup>
+</Project>

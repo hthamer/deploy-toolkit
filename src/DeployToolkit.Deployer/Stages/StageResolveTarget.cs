@@ -29,8 +29,26 @@ internal sealed class StageResolveTarget : StagePanel
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        layout.Controls.Add(AppTheme.MakeSectionLabel("Resolved deployment target"));
+        layout.Controls.Add(AppTheme.MakeSectionLabel("Deployment target"));
+
+        // The wizard drives navigation — resolution is user-initiated from
+        // here, not auto-fired on entering the step (which used to stack the
+        // target-type and IIS picker dialogs on top of each other).
+        var selectRow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 4, 0, 4),
+            WrapContents = false,
+        };
+        var selectButton = new Button { Text = "Select target…" };
+        AppTheme.StyleButton(selectButton);
+        selectButton.Click += (_, _) => StartResolve();
+        selectRow.Controls.Add(selectButton);
+        layout.Controls.Add(selectRow);
 
         _detailsBox = MakeReadOnlySummaryBox(200);
 
@@ -49,7 +67,7 @@ internal sealed class StageResolveTarget : StagePanel
         Controls.Add(layout);
     }
 
-    public override string Title => "2. Resolve Target";
+    public override string Title => "2. Target";
 
     public override void OnEnter()
     {
@@ -57,19 +75,21 @@ internal sealed class StageResolveTarget : StagePanel
         if (Context is null)
         {
             _detailsBox.Text = string.Empty;
-            _messageLabel.Text = "Load a package first.";
+            _messageLabel.Text = "Load a package first (step 1).";
             return;
         }
 
         if (Context.TargetType is { } known)
         {
-            _messageLabel.Text = "Click 'Resolve Target' below to re-resolve against live IIS, or continue to Pre-flight.";
+            _messageLabel.Text = known == TargetType.IisLocal && Context.IisTarget is null
+                ? "Click 'Select target…' to pick the IIS application."
+                : "Target resolved — click Next to continue, or 'Select target…' to change it.";
             RenderDetails();
         }
         else
         {
             _detailsBox.Text = string.Empty;
-            _messageLabel.Text = "Click 'Resolve Target' below — the target type is not known yet and will be asked for.";
+            _messageLabel.Text = "Click 'Select target…' to choose where this package deploys.";
         }
     }
 

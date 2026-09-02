@@ -1,6 +1,7 @@
 using DeployToolkit.AppKit;
 using DeployToolkit.Core.Backup;
 using DeployToolkit.Core.Registry;
+using DeployToolkit.Core.Targets;
 using DeployToolkit.Deployer.Stages;
 
 namespace DeployToolkit.Deployer;
@@ -8,9 +9,9 @@ namespace DeployToolkit.Deployer;
 /// <summary>
 /// The §11 stage state machine: Empty (no package) → Loaded (package
 /// verified + matched to a registry record) → Ready (target resolved +
-/// pre-flight passed) → Running (deploy run) → Done (run succeeded; Finish
-/// resets). A failed/cancelled run returns to Ready so the same package can
-/// be re-deployed with one click.
+/// pre-flight passed) → Running (deploy run) → Done (run succeeded; a new
+/// package resets). A failed/cancelled run returns to Ready so the same
+/// package can be re-deployed with one click.
 /// </summary>
 internal enum DeployerStage
 {
@@ -22,19 +23,23 @@ internal enum DeployerStage
 }
 
 /// <summary>
-/// The §11 deploy flow state machine: <see cref="DeployerStage.Empty"/> (no
-/// package) → <see cref="DeployerStage.Loaded"/> (package verified + matched
-/// to a registry record) → <see cref="DeployerStage.Ready"/> (target resolved
-/// + pre-flight checks passed) → <see cref="DeployerStage.Running"/> (the
-/// guarded deploy run) → <see cref="DeployerStage.Done"/> (run completed
-/// successfully; "Finish" resets). A failed/cancelled run returns to Ready so
-/// the same package can be re-deployed with one click after a fix.
-///
+/// The §11 deploy flow as a WIZARD (same pattern as the Packager's packaging
+/// wizard): a left-hand step list, one <see cref="StagePanel"/> at a time in
+/// the content area, and Back / Next navigation at the bottom. The steps are
+/// linear — each unlocks the next only when its work is done — and every
+/// transition is user-driven, so modal pickers (target type, IIS application)
+/// appear inside their own step instead of stacking on top of each other.
+/// <code>
+///   1. Package     — pick the delta.zip; integrity + registry match run automatically
+///   2. Target      — resolve where it deploys (IIS app selection)
+///   3. Pre-flight  — run the checks; must pass
+///   4. Backup      — advisory pre-backup (the deploy run backs up anyway)
+///   5. Deploy      — the guarded run
+/// </code>
 /// Startup never crashes on a missing/unreachable registry: settings are
-/// loaded tolerantly (own file: %APPDATA%\DeployToolkit\deployer-registry.json,
-/// same pattern as the Packager shell) and when no store could be opened the
-/// stage buttons stay disabled with a hint in the status strip until the user
-/// configures a working connection.
+/// loaded tolerantly (own file: %APPDATA%\DeployToolkit\deployer-registry.json)
+/// and when no store could be opened the flow stays disabled with a hint in
+/// the status strip until the user configures a working connection.
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -51,43 +56,43 @@ public sealed class MainForm : Form
     private readonly StagePreflight _preflightStage;
     private readonly StageBackup _backupStage;
     private readonly StageDeploy _deployStage;
-    private StagePanel _currentStage = null!;
+    private readonly StagePanel[] _steps;
 
+    private int _currentIndex;
+    private int _maxReachedIndex;
+
+    private ListBox _stepList = null!;
+    private Panel _contentPanel = null!;
+    private LogPane _logPane = null!;
+    private Button _backButton = null!;
+    private Button _nextButton = null!;
+    private Button _deployNowButton = null!;
+    private Button _closeButton = null!;
+    private Label _hintLabel = null!;
     private ToolStripMenuItem _loadPackageItem = null!;
     private ToolStripMenuItem _rollbackItem = null!;
     private ToolStripMenuItem _viewLogItem = null!;
-    private Label _packageSummary = null!;
-    private LogPane _logPane = null!;
-    private Button _verifyLoadButton = null!;
-    private Button _resolveTargetButton = null!;
-    private Button _preflightButton = null!;
-    private Button _backupButton = null!;
-    private Button _deployButton = null!;
-    private Button _finishButton = null!;
     private ToolStripStatusLabel _statusLabel = null!;
-    private Panel _stageHost = null!;
 
     public MainForm()
     {
         Text = "DeployToolkit Deployer";
         AppTheme.Apply(this, primaryWindow: true);
         StartPosition = FormStartPosition.CenterScreen;
-        Size = new Size(760, 560);
-        MinimumSize = new Size(680, 500);
+        Size = new Size(1020, 700);
+        MinimumSize = new Size(940, 620);
 
         _loadStage = new StageLoadPackage(this);
         _resolveStage = new StageResolveTarget(this);
         _preflightStage = new StagePreflight(this);
         _backupStage = new StageBackup(this);
         _deployStage = new StageDeploy(this);
+        _steps = new StagePanel[] { _loadStage, _resolveStage, _preflightStage, _backupStage, _deployStage };
 
-        BuildMenu();
-        BuildHeader();
-        BuildStageArea();
-        BuildBottomBar();
-        BuildStatusStrip();
-
-        ShowStage(_loadStage);
+        BuildUi();
+        foreach (var step in _steps)
+            _stepList.Items.Add(step.Title);
+        ShowStep(0);
     }
 
     protected override void OnShown(EventArgs e)
@@ -97,7 +102,7 @@ public sealed class MainForm : Form
     }
 
     // ---------------------------------------------------------------
-    // State the stage panels read/write
+    // State the step panels read/write
 
     /// <summary>The open registry store; null until a connection succeeds.</summary>
     internal IRegistryStore? Store => _store;
@@ -116,14 +121,13 @@ public sealed class MainForm : Form
     internal void SetStage(DeployerStage stage)
     {
         _stage = stage;
-        UpdateStageButtons();
+        RefreshNav();
     }
 
     /// <summary>Replaces the context (fresh load or reset).</summary>
     internal void SetContext(DeploymentContext? context)
     {
         _context = context;
-        UpdateHeader();
     }
 
     internal void AppendLog(string line) => _logPane.AppendLine(line);
@@ -139,214 +143,276 @@ public sealed class MainForm : Form
     /// <summary>Whether a run log is available to view.</summary>
     internal bool HasLastRunLog => _lastRunLogPath is not null;
 
-    internal void ShowStage(StagePanel stage)
-    {
-        if (ReferenceEquals(_currentStage, stage))
-            return;
-        ShowStageCore(stage);
-    }
+    // ---------------------------------------------------------------
+    // Step transitions — every move is user-driven (Back/Next/step list),
+    // so the shell only refreshes navigation, it never auto-advances.
 
-    /// <summary>Re-shows a stage the user is already on (used to force
-    /// OnEnter re-runs, e.g. after a fresh connection).</summary>
-    internal void RefreshStage(StagePanel stage) => ShowStageCore(stage);
-
-    private void ShowStageCore(StagePanel stage)
-    {
-        _currentStage = stage;
-        _stageHost.Controls.Clear();
-        _stageHost.Controls.Add(stage);
-        stage.OnEnter();
-    }
-
-    /// <summary>Called by the load stage after verify+match succeeded:
-    /// advances to the resolve-target stage (which routes to pre-flight for
-    /// non-IIS targets).</summary>
+    /// <summary>Called by the load step after verify+match succeeded: unlocks
+    /// the Target step (the user clicks Next).</summary>
     internal void OnPackageLoaded()
     {
         SetStage(DeployerStage.Loaded);
-        ShowStage(_resolveStage);
-        _resolveStage.StartResolve();
     }
 
-    /// <summary>Called by the resolve stage once the target is settled.</summary>
-    internal void OnTargetResolved() => ShowStage(_preflightStage);
+    /// <summary>Called by the resolve step once the target is settled: unlocks
+    /// the Pre-flight step.</summary>
+    internal void OnTargetResolved() => RefreshNav();
 
-    /// <summary>Called by the pre-flight stage when every check passes.</summary>
+    /// <summary>Called by the pre-flight step when every check passes.</summary>
     internal void OnPreflightPassed() => SetStage(DeployerStage.Ready);
 
-    /// <summary>Called by the deploy stage when a run finished successfully.</summary>
+    /// <summary>Called by the deploy step when a run finished successfully.</summary>
     internal void OnRunSucceeded() => SetStage(DeployerStage.Done);
 
-    /// <summary>Called by the deploy stage when a run failed or was cancelled.</summary>
+    /// <summary>Called by the deploy step when a run failed or was cancelled.</summary>
     internal void OnRunFailed() => SetStage(DeployerStage.Ready);
 
-    /// <summary>Shows the deploy stage panel without starting a run (the
-    /// Backup stage's "Skip — go to Deploy" affordance).</summary>
-    internal void ShowDeployStage() => ShowStage(_deployStage);
+    /// <summary>Jumps straight to the Deploy step (the Backup step's "Skip —
+    /// go to Deploy" affordance).</summary>
+    internal void ShowDeployStage() => ShowStep(IndexOf(_deployStage));
+
+    /// <summary>Re-runs the given step's OnEnter (used after a fresh
+    /// connection so steps re-read the store).</summary>
+    internal void RefreshStage(StagePanel stage)
+    {
+        if (ReferenceEquals(_steps[_currentIndex], stage))
+        {
+            stage.OnEnter();
+            RefreshNav();
+        }
+    }
 
     // ---------------------------------------------------------------
     // UI construction
 
-    private void BuildMenu()
+    private void BuildUi()
     {
         var menu = new MenuStrip { Dock = DockStyle.Top };
-
         _loadPackageItem = new ToolStripMenuItem("Load Package…")
         {
-            Font = new Font(AppTheme.FontFamily, 9f, FontStyle.Bold), // the primary action
+            Font = new Font(AppTheme.FontFamily, 9f, FontStyle.Bold),
         };
         _loadPackageItem.Click += (_, _) => LoadPackageViaDialog();
-
         var connectionItem = new ToolStripMenuItem("Registry Connection…");
         connectionItem.Click += (_, _) => ChangeConnection();
 
+        var advanced = new ToolStripMenuItem("Advanced");
         _rollbackItem = new ToolStripMenuItem("Standalone Rollback…");
         _rollbackItem.Click += (_, _) => StandaloneRollback();
-
         _viewLogItem = new ToolStripMenuItem("View Last Run Log") { Enabled = false };
         _viewLogItem.Click += (_, _) => ViewLastRunLog();
+        advanced.DropDownItems.Add(_rollbackItem);
+        advanced.DropDownItems.Add(_viewLogItem);
 
         menu.Items.Add(_loadPackageItem);
         menu.Items.Add(connectionItem);
-        menu.Items.Add(_rollbackItem);
-        menu.Items.Add(_viewLogItem);
+        menu.Items.Add(advanced);
         MainMenuStrip = menu;
-        Controls.Add(menu);
-    }
 
-    private void BuildHeader()
-    {
-        var header = new Panel { Dock = DockStyle.Top, Height = 92, Padding = new Padding(12, 8, 12, 4) };
-        _packageSummary = new Label
+        _contentPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4) };
+
+        _stepList = new ListBox
+        {
+            Dock = DockStyle.Left,
+            Width = 210,
+            BorderStyle = BorderStyle.FixedSingle,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 26,
+            IntegralHeight = false,
+            Font = new Font(AppTheme.FontFamily, 9.75f),
+        };
+        _stepList.DrawItem += StepsList_DrawItem;
+        _stepList.SelectedIndexChanged += StepsList_SelectedIndexChanged;
+
+        _logPane = new LogPane { Dock = DockStyle.Bottom, Height = 118 };
+
+        var nav = new Panel { Dock = DockStyle.Bottom, Height = 54 };
+        _hintLabel = new Label
         {
             Dock = DockStyle.Fill,
-            Text = "No package loaded. Use 'Load Package…' to pick a delta.zip (plan §11 step 1).",
+            TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
             ForeColor = Color.DimGray,
-            AutoEllipsis = false,
+            Padding = new Padding(12, 0, 8, 0),
         };
-        header.Controls.Add(_packageSummary);
-        Controls.Add(header);
-    }
-
-    private void BuildStageArea()
-    {
-        _stageHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 4, 12, 4), AutoScroll = true };
-        Controls.Add(_stageHost);
-    }
-
-    private void BuildBottomBar()
-    {
-        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 220 };
-
-        _logPane = new LogPane { Dock = DockStyle.Fill };
-
-        var buttons = new FlowLayoutPanel
+        var navButtons = new FlowLayoutPanel
         {
-            Dock = DockStyle.Bottom,
+            Dock = DockStyle.Right,
             FlowDirection = FlowDirection.LeftToRight,
-            Height = 52,
-            Padding = new Padding(12, 8, 12, 8),
+            Width = 380,
+            Padding = new Padding(4, 9, 12, 8),
             WrapContents = false,
         };
-        _verifyLoadButton = MakeStageButton("Verify && Load");
-        _resolveTargetButton = MakeStageButton("Resolve Target");
-        _preflightButton = MakeStageButton("Pre-flight");
-        _backupButton = MakeStageButton("Backup");
-        _deployButton = MakeStageButton("Deploy");
-        _finishButton = MakeStageButton("Finish");
-        _deployButton.Font = new Font(AppTheme.FontFamily, 9f, FontStyle.Bold);
+        _backButton = new Button { Text = "< Back" };
+        _nextButton = new Button { Text = "Next >" };
+        _deployNowButton = new Button { Text = "Deploy", Enabled = false };
+        _closeButton = new Button { Text = "Close" };
+        AppTheme.StyleButton(_backButton);
+        AppTheme.StyleButton(_nextButton);
+        AppTheme.StyleButton(_deployNowButton);
+        AppTheme.StyleButton(_closeButton);
+        _nextButton.Font = new Font(AppTheme.FontFamily, 9f, FontStyle.Bold);
+        _deployNowButton.Font = new Font(AppTheme.FontFamily, 9.5f, FontStyle.Bold);
+        _deployNowButton.MinimumSize = new Size(110, 0);
 
-        _verifyLoadButton.Click += (_, _) =>
-        {
-            SetContext(null); // a fresh load always starts from an empty context
-            ShowStage(_loadStage);
-            _loadStage.StartLoad();
-        };
-        _resolveTargetButton.Click += (_, _) => { ShowStage(_resolveStage); _resolveStage.StartResolve(); };
-        _preflightButton.Click += (_, _) => ShowStage(_preflightStage);
-        _backupButton.Click += (_, _) => ShowStage(_backupStage);
-        _deployButton.Click += (_, _) => { ShowStage(_deployStage); _deployStage.StartDeploy(); };
-        _finishButton.Click += (_, _) => ResetForNewPackage();
+        _backButton.Click += (_, _) => GoToStep(_currentIndex - 1);
+        _nextButton.Click += (_, _) => GoToStep(_currentIndex + 1);
+        _deployNowButton.Click += (_, _) => _deployStage.StartDeploy();
+        _closeButton.Click += (_, _) => Close();
 
-        buttons.Controls.Add(_verifyLoadButton);
-        buttons.Controls.Add(_resolveTargetButton);
-        buttons.Controls.Add(_preflightButton);
-        buttons.Controls.Add(_backupButton);
-        buttons.Controls.Add(_deployButton);
-        buttons.Controls.Add(_finishButton);
+        navButtons.Controls.Add(_backButton);
+        navButtons.Controls.Add(_nextButton);
+        navButtons.Controls.Add(_deployNowButton);
+        navButtons.Controls.Add(_closeButton);
 
-        bottom.Controls.Add(_logPane);
-        bottom.Controls.Add(buttons);
-        Controls.Add(bottom);
-    }
+        nav.Controls.Add(_hintLabel);
+        nav.Controls.Add(navButtons);
 
-    private static Button MakeStageButton(string text)
-    {
-        var button = new Button { Text = text, Enabled = false };
-        AppTheme.StyleButton(button);
-        return button;
-    }
-
-    private void BuildStatusStrip()
-    {
-        var strip = new StatusStrip { Dock = DockStyle.Bottom };
+        var status = new StatusStrip { Dock = DockStyle.Bottom };
         _statusLabel = new ToolStripStatusLabel
         {
             Spring = true,
             TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
         };
-        strip.Items.Add(_statusLabel);
-        Controls.Add(strip);
+        status.Items.Add(_statusLabel);
+
+        // Docking order matters: Fill first, then edges — each later add docks
+        // within the remaining space, so nothing ever overlaps the menu.
+        Controls.Add(_contentPanel);
+        Controls.Add(_stepList);
+        Controls.Add(_logPane);
+        Controls.Add(nav);
+        Controls.Add(status);
+        Controls.Add(menu);
     }
 
     // ---------------------------------------------------------------
-    // Stage-machine rendering
+    // Navigation
 
-    private void UpdateStageButtons()
+    private StagePanel CurrentStep => _steps[_currentIndex];
+
+    private int IndexOf(StagePanel step)
     {
-        var connected = _store is not null;
-        var running = _stage == DeployerStage.Running;
-        var loaded = _stage is DeployerStage.Loaded or DeployerStage.Ready;
+        for (var i = 0; i < _steps.Length; i++)
+        {
+            if (ReferenceEquals(_steps[i], step))
+                return i;
+        }
+        return 0;
+    }
 
-        _verifyLoadButton.Enabled = connected && !running;
-        _resolveTargetButton.Enabled = connected && loaded;
-        _preflightButton.Enabled = connected && loaded;
-        _backupButton.Enabled = connected && loaded;
-        _deployButton.Enabled = connected && _stage == DeployerStage.Ready;
-        _finishButton.Enabled = _stage == DeployerStage.Done;
+    /// <summary>Whether the user may move FORWARD past the given step —
+    /// each step's completion condition (the wizard's linearity rule).</summary>
+    private bool CanProceed(StagePanel step) => step switch
+    {
+        StageLoadPackage => _context is not null,
+        StageResolveTarget => _context is { } c
+            && c.TargetType is not null
+            && (c.TargetType != TargetType.IisLocal || c.IisTarget is not null),
+        StagePreflight => _stage is DeployerStage.Ready or DeployerStage.Running or DeployerStage.Done,
+        _ => true, // Backup (advisory) and Deploy (terminal) steps
+    };
+
+    private void GoToStep(int index)
+    {
+        if (index < 0 || index >= _steps.Length || index == _currentIndex)
+            return;
+        if (index > _maxReachedIndex)
+            return; // not unlocked yet
+
+        ShowStep(index);
+    }
+
+    private void ShowStep(int index)
+    {
+        _currentIndex = index;
+        if (index > _maxReachedIndex)
+            _maxReachedIndex = index;
+
+        _contentPanel.Controls.Clear();
+        var step = _steps[index];
+        _contentPanel.Controls.Add(step);
+        step.OnEnter();
+
+        if (_stepList.SelectedIndex != index)
+            _stepList.SelectedIndex = index;
+        RefreshNav();
+    }
+
+    private void RefreshNav()
+    {
+        var running = _stage == DeployerStage.Running;
+        var connected = _store is not null;
+        var last = _currentIndex == _steps.Length - 1;
+
+        _hintLabel.Text = HintFor(CurrentStep);
+
+        _backButton.Enabled = _currentIndex > 0 && !running;
+        _nextButton.Visible = !last;
+        _nextButton.Enabled = !last && !running && CanProceed(CurrentStep);
+        _deployNowButton.Visible = last;
+        _deployNowButton.Enabled = last && !running && connected && _stage == DeployerStage.Ready;
+        _closeButton.Enabled = true;
         _loadPackageItem.Enabled = connected && !running;
         _rollbackItem.Enabled = !running;
+        _stepList.Invalidate();
     }
 
-    private void UpdateHeader()
+    private static string HintFor(StagePanel step) => step switch
     {
-        if (_context is not { } context)
-        {
-            _packageSummary.Text = "No package loaded. Use 'Load Package…' to pick a delta.zip (plan §11 step 1).";
-            _packageSummary.ForeColor = Color.DimGray;
-            return;
-        }
+        StageLoadPackage => "Pick the package file — verification and registry matching run automatically.",
+        StageResolveTarget => "Choose where this package deploys: select the IIS application, then Next.",
+        StagePreflight => "Run the checks — they must all pass before Deploy unlocks.",
+        StageBackup => "Optional: take the backup now. The deploy run always backs up before touching anything.",
+        _ => "Review the run plan and press Deploy when ready.",
+    };
 
-        var manifest = context.Manifest;
-        var package = context.Package;
-        var target = context.TargetType is { } type ? type.ToString() : "(not resolved yet)";
-        _packageSummary.Text =
-            $"{manifest.Client} / {manifest.Component} — v{manifest.Version}    (component {manifest.ComponentId})\n" +
-            $"Package: {(package is null ? "(not matched yet)" : $"{package.PackageId} — {package.Status}")}    Target: {target}\n" +
-            $"Zip: {context.ZipPath}";
-        _packageSummary.ForeColor = Color.Black;
+    // ---------------------------------------------------------------
+    // Step list drawing (mirrors the Packager wizard's look)
+
+    private void StepsList_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= _steps.Length)
+            return;
+
+        var available = e.Index <= _maxReachedIndex;
+        var selected = e.Index == _currentIndex;
+
+        var backColor = selected ? Color.FromArgb(204, 228, 247) : Color.White;
+        using (var backBrush = new SolidBrush(backColor))
+            e.Graphics.FillRectangle(backBrush, e.Bounds);
+
+        var textColor = available ? Color.Black : SystemColors.GrayText;
+        var fontStyle = selected ? FontStyle.Bold : FontStyle.Regular;
+        using var textBrush = new SolidBrush(textColor);
+        using var font = new Font(AppTheme.FontFamily, 9.75f, fontStyle);
+        var bounds = new Rectangle(e.Bounds.X + 8, e.Bounds.Y, e.Bounds.Width - 8, e.Bounds.Height);
+        var format = new StringFormat { LineAlignment = StringAlignment.Center };
+        e.Graphics.DrawString(_steps[e.Index].Title, font, textBrush, bounds, format);
     }
+
+    private void StepsList_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        // Clicking a not-yet-reachable step snaps back to the current one.
+        if (_stepList.SelectedIndex != _currentIndex)
+        {
+            if (_stepList.SelectedIndex >= 0 && _stepList.SelectedIndex <= _maxReachedIndex)
+                GoToStep(_stepList.SelectedIndex);
+            else
+                _stepList.SelectedIndex = _currentIndex;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Reset / menu actions
 
     private void ResetForNewPackage()
     {
         SetContext(null);
         SetStage(DeployerStage.Empty);
         ClearLog();
-        ShowStageCore(_loadStage); // force re-enter so the panel clears its result state
+        _maxReachedIndex = 0;
+        ShowStep(0);
     }
-
-    // ---------------------------------------------------------------
-    // Menu actions
 
     private void LoadPackageViaDialog()
     {
@@ -359,7 +425,8 @@ public sealed class MainForm : Form
             return;
 
         SetContext(null);
-        ShowStage(_loadStage);
+        SetStage(DeployerStage.Empty);
+        ShowStep(0);
         _loadStage.SetZipPath(picker.FileName);
         _loadStage.StartLoad();
     }
@@ -457,7 +524,7 @@ public sealed class MainForm : Form
         {
             await TryConnectAsync(_settings);
             UpdateConnectionUi();
-            RefreshStage(_currentStage); // stages re-read the store when re-entered
+            RefreshStage(_steps[_currentIndex]); // steps re-read the store when re-entered
         });
     }
 
@@ -522,7 +589,7 @@ public sealed class MainForm : Form
             _statusLabel.ForeColor = Color.Firebrick;
         }
 
-        UpdateStageButtons();
+        RefreshNav();
     }
 
     // ---------------------------------------------------------------

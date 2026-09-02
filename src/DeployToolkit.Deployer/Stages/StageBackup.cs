@@ -66,6 +66,10 @@ internal sealed class StageBackup : StagePanel
 
     public override string Title => "4. Backup";
 
+    /// <summary>Runs the backup from the shell's primary Backup button (the
+    /// same guarded path as the in-stage "Pre-flight backup now" button).</summary>
+    internal void StartBackup() => Guard.RunAsync(Shell, "Backing up…", RunBackupAsync);
+
     public override void OnEnter()
     {
         if (Context is not { } context)

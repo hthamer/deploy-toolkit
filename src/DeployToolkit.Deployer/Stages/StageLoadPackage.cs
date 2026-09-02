@@ -90,7 +90,7 @@ internal sealed class StageLoadPackage : StagePanel
         Controls.Add(layout);
     }
 
-    public override string Title => "1. Verify & Load";
+    public override string Title => "1. Package";
 
     public override void OnEnter()
     {
@@ -100,7 +100,7 @@ internal sealed class StageLoadPackage : StagePanel
             _messageLabel.ForeColor = Color.DimGray;
             _messageLabel.Text = Shell.Store is null
                 ? "Connect to a registry first (menu: Registry Connection…)."
-                : "Pick a package and click 'Verify & Load' below. The integrity check runs before anything is shown.";
+                : "Pick a package file below — the integrity check runs automatically.";
         }
 
         // Offline-mode only affordance — in online mode the Packager owns
@@ -218,7 +218,12 @@ internal sealed class StageLoadPackage : StagePanel
         }
 
         if (picker.ShowDialog(this) == DialogResult.OK)
+        {
             _zipPathBox.Text = picker.FileName;
+            // Workflow step 2→3: verify + load runs automatically the moment
+            // a file is picked — no separate "Verify & Load" click.
+            StartLoad();
+        }
     }
 
     /// <summary>Option B: opens the registry package picker. On OK, fills the
@@ -253,7 +258,8 @@ internal sealed class StageLoadPackage : StagePanel
 
         _zipPathBox.Text = pkg.PackageLocation!;
         _messageLabel.ForeColor = Color.DimGray;
-        _messageLabel.Text = $"Picked package '{pkg.Version}' ({pkg.Status}) from the registry. Click 'Verify & Load' below.";
+        _messageLabel.Text = $"Picked package '{pkg.Version}' ({pkg.Status}) from the registry — verifying…";
+        StartLoad();
     }
 
     /// <summary>
