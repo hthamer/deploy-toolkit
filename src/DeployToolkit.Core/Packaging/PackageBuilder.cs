@@ -262,7 +262,7 @@ public sealed class PackageBuilder
                 // thread so the UI stays responsive (same reason the publish-
                 // output hashing runs off-thread).
                 packageLocation = await _packageStore.UploadAsync(
-                    request.OutputZipPath, component.Name, request.Version);
+                    request.OutputZipPath, client.Name, component.Name, request.Version);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
             {

@@ -366,7 +366,7 @@ try
     var args1 = MigrationScriptGenerator.BuildArguments(
         @"C:\repo\DB Project", @"C:\out\script.sql", fromMigration: null, toMigration: null);
     Check("full-schema script (no from/to) — quotes spaced project path",
-        args1 == "ef migrations script --project \"C:\\repo\\DB Project\" --output \"C:\\out\\script.sql\");
+        args1 == "ef migrations script --project \"C:\\repo\\DB Project\" --output \"C:\\out\\script.sql\"");
 
     var args2 = MigrationScriptGenerator.BuildArguments(
         @"C:\repo\DB", @"C:\out\script.sql", fromMigration: "20260101120000_InitialCreate", toMigration: "20260301120000_AddIndexes");

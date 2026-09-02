@@ -69,6 +69,7 @@ public static class GitTagger
         string commitSha,
         string tagName,
         string? tagMessage = null,
+        Func<GitCredentialRequest, GitCredential?>? credentialPrompt = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(repositoryPath))
@@ -96,20 +97,26 @@ public static class GitTagger
                     return new GitTagResult(true, tagName, null); // already tagged
 
                 // Create the tag (annotated when a message is provided, lightweight otherwise).
+                // LibGit2Sharp 0.27: the annotated overload needs a Signature tagger
+                // (Add(name, canonicalName, Signature, message)); the 3-arg overload
+                // is Add(name, canonicalName, bool forceOverwrite).
                 if (!string.IsNullOrWhiteSpace(tagMessage))
-                    repo.Tags.Add(tagName, commit.Sha, tagMessage);
+                    repo.Tags.Add(tagName, commit.Sha, BuildTaggerSignature(repo), tagMessage);
                 else
                     repo.Tags.Add(tagName, commit.Sha);
 
-                // Best-effort push to origin.
+                // Best-effort push to origin — with the same credential chain
+                // the synchronizer uses. A bare push (no PushOptions) always
+                // fails against a protected remote ("anonymous request … 401"),
+                // so resolve credentials in-process: URL-embedded → Windows
+                // Credential Manager (where Git Credential Manager / Visual
+                // Studio store their git:https://… entries); on an auth
+                // failure offer the interactive prompt exactly once.
                 try
                 {
                     var remote = repo.Network.Remotes["origin"];
                     if (remote is not null)
-                    {
-                        var pushRefs = repo.Network.BuildPushOptions(remote, tagName);
-                        repo.Network.Push(remote, pushRefs);
-                    }
+                        PushTag(repo, remote, tagName, credentialPrompt);
                 }
                 catch (Exception pushEx)
                 {
@@ -131,6 +138,75 @@ public static class GitTagger
         }
     }
 
+    /// <summary>Builds the tagger identity for annotated tags from the
+    /// repository's git config; falls back to a fixed identity when
+    /// user.name/user.email are not configured.</summary>
+    private static Signature BuildTaggerSignature(Repository repo)
+    {
+        try
+        {
+            var configured = repo.Config.BuildSignature(DateTimeOffset.UtcNow);
+            if (!string.IsNullOrWhiteSpace(configured.Name) && !string.IsNullOrWhiteSpace(configured.Email))
+                return configured;
+        }
+        catch
+        {
+            // No usable git config — use the fallback identity below.
+        }
+
+        return new Signature("DeployToolkit", "deploytoolkit@localhost", DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>Pushes <c>refs/tags/&lt;tagName&gt;</c> to the remote with the
+    /// credential chain (URL-embedded → Windows Credential Manager → optional
+    /// interactive prompt on an auth failure, retried once). Mirrors the
+    /// synchronizer's fetch loop so both flows behave identically.</summary>
+    private static void PushTag(
+        Repository repo, Remote remote, string tagName,
+        Func<GitCredentialRequest, GitCredential?>? credentialPrompt)
+    {
+        var credentialRequest = GitCredentialRequest.FromUrl(remote.Url);
+        var credentialChain = new GitCredentialChain(
+            new UrlEmbeddedCredentialSource(),
+            new WindowsCredentialManagerSource());
+        var credential = credentialChain.Resolve(credentialRequest);
+
+        var pushRefSpec = $"refs/tags/{tagName}:refs/tags/{tagName}";
+        var attempts = 0;
+        while (true)
+        {
+            attempts++;
+            try
+            {
+                repo.Network.Push(remote, pushRefSpec, BuildPushOptions(credential));
+                return;
+            }
+            catch (LibGit2SharpException ex) when (IsAuthenticationFailure(ex.Message) && attempts == 1)
+            {
+                credential = credentialPrompt?.Invoke(credentialRequest);
+                if (credential is null)
+                    throw new GitAuthenticationException(credentialRequest.Host, credentialChain.Describe(), ex);
+            }
+        }
+    }
+
+    private static PushOptions BuildPushOptions(GitCredential? credential) => new()
+    {
+        CredentialsProvider = credential is null
+            ? null
+            : (_, _, _) => new UsernamePasswordCredentials
+            {
+                Username = credential.Username,
+                Password = credential.Password,
+            },
+    };
+
+    /// <summary>PURE: does this libgit2 error text describe an authentication
+    /// failure (as opposed to network/not-found problems)? Same detector the
+    /// synchronizer uses — pinned there.</summary>
+    private static bool IsAuthenticationFailure(string message) =>
+        LibGit2Synchronizer.IsAuthenticationFailure(message);
+
     /// <summary>Sanitizes a name for use as a git tag/branch ref: replaces
     /// characters git rejects (spaces, ~, ^, :, ?, *, [, \) with '_'.</summary>
     private static string MakeSafeGitRef(string name)
@@ -140,21 +216,5 @@ public static class GitTagger
         var invalid = new[] { ' ', '~', '^', ':', '?', '*', '[', '\\', ' ' };
         var safe = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
         return string.IsNullOrWhiteSpace(safe) ? "component" : safe;
-    }
-}
-
-/// <summary>
-/// Extension: builds LibGit2Sharp PushOptions for a tag push with default
-/// credential handling (same chain as the synchronizer — URL-embedded,
-/// Windows Credential Manager). Returns the refspec to push.
-/// </summary>
-internal static class RepositoryPushExtensions
-{
-    internal static string BuildPushOptions(this Network network, Remote remote, string tagName)
-    {
-        // Return the refspec — the caller calls network.Push with it.
-        // LibGit2Sharp 0.27 Push signature: Push(Remote remote, string pushRefSpec)
-        // For a tag: refs/tags/<tagName>:refs/tags/<tagName>
-        return $"refs/tags/{tagName}:refs/tags/{tagName}";
     }
 }

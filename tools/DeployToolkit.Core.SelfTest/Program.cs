@@ -1305,8 +1305,9 @@ try
     // Upload a fake .zip + read it back.
     var fakeZip = Path.Combine(workRoot, "fake-package.zip");
     File.WriteAllText(fakeZip, "fake-zip-bytes");
-    var location = await store.UploadAsync(fakeZip, "CMS / Web", "1.2.3");
-    Check("Upload returns a path under <root>/<component>/", location.StartsWith(storeRoot));
+    var location = await store.UploadAsync(fakeZip, "Acme Corp", "CMS / Web", "1.2.3");
+    Check("Upload returns a path under <root>/DeployToolkit/Packages/<client>/<component>/",
+        location.StartsWith(Path.Combine(storeRoot, "DeployToolkit", "Packages", "Acme Corp", "CMS _ Web")));
     Check("Upload path contains the sanitized component folder", location.Contains("CMS _ Web"));
     Check("Upload path contains the version + .zip", location.EndsWith("CMS _ Web-1.2.3.zip"));
     Check("Uploaded file exists in the store", File.Exists(location));
@@ -1321,7 +1322,7 @@ try
 
     // Re-upload the same component+version overwrites (a rebuild).
     File.WriteAllText(fakeZip, "fake-zip-bytes-v2");
-    var location2 = await store.UploadAsync(fakeZip, "CMS / Web", "1.2.3");
+    var location2 = await store.UploadAsync(fakeZip, "Acme Corp", "CMS / Web", "1.2.3");
     Check("Re-upload lands at the same path", location2 == location);
     Check("Re-upload overwrote the file", File.ReadAllText(location2) == "fake-zip-bytes-v2");
 

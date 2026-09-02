@@ -309,13 +309,14 @@ public sealed class MainForm : Form
     {
         var template = _settings.GitTagTemplate;
         if (string.IsNullOrWhiteSpace(template))
-            return; // auto-tagging disabled
+            return; // auto-tagging disabled — deliberate, no status noise
 
         if (string.IsNullOrWhiteSpace(manifest.GitCommitSha))
         {
             // No commit SHA recorded (the package was built without git sync —
             // e.g. a non-git folder or the Fetch & Pull checkbox was unchecked).
-            // Nothing to tag.
+            // Nothing to tag — but say WHY, or "no tag appeared" is undiagnosable.
+            _statusLabel.Text = "Git tag skipped: package was built without a git commit (no git sync).";
             return;
         }
 
@@ -328,6 +329,7 @@ public sealed class MainForm : Form
         {
             // No folder mapped to this component on this machine — the package
             // may have been built on another dev's PC. Can't tag locally.
+            _statusLabel.Text = $"Git tag skipped: no local git folder is mapped to this component on this PC (map a folder via New Package to enable tagging).";
             return;
         }
 
@@ -343,7 +345,11 @@ public sealed class MainForm : Form
             {
                 var result = await DeployToolkit.Core.Git.GitTagger.TagAndPushAsync(
                     localFolder, manifest.GitCommitSha!, tagName,
-                    tagMessage: $"Deployed {manifest.Version} on {DateTimeOffset.UtcNow:u}");
+                    tagMessage: $"Deployed {manifest.Version} on {DateTimeOffset.UtcNow:u}",
+                    // On an authentication failure the push asks once for
+                    // credentials (same UI as the git sync flow); "Remember"
+                    // writes the Windows Credential Manager entry for next time.
+                    credentialPrompt: GitCredentialUi.CreatePrompt(this));
 
                 if (this.IsDisposed) return;
 
@@ -379,13 +385,12 @@ public sealed class MainForm : Form
     {
         try
         {
-            // The mapping file path — mirrors what JsonFileProjectMappingStore
-            // uses. The Packager constructs it from DeployerPaths or
-            // %APPDATA%\DeployToolkit\packager-mappings.json.
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            if (string.IsNullOrWhiteSpace(appData))
-                return null;
-            var mappingFile = Path.Combine(appData, "DeployToolkit", "packager-mappings.json");
+            // The mapping file path must be the SAME file the
+            // JsonFileProjectMappingStore instance actually uses (see
+            // CreateDefaultMappingStore) — reading a different filename here
+            // made the reverse lookup always miss and git tagging silently
+            // never happen.
+            var mappingFile = DefaultMappingFilePath();
             if (!File.Exists(mappingFile))
                 return null;
 
@@ -806,11 +811,18 @@ public sealed class MainForm : Form
     {
         // Folder→component mappings are machine-local (plan §5) — keep them
         // next to the connection settings under %APPDATA%\DeployToolkit.
+        return new JsonFileProjectMappingStore(DefaultMappingFilePath());
+    }
+
+    /// <summary>The single source of truth for the folder→component mapping
+    /// file path — used both by the mapping store and by the git-tag hook's
+    /// reverse lookup, so the two can never disagree on the filename.</summary>
+    private static string DefaultMappingFilePath()
+    {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         if (string.IsNullOrWhiteSpace(appData))
             appData = Environment.CurrentDirectory;
-        return new JsonFileProjectMappingStore(
-            Path.Combine(appData, "DeployToolkit", "packager-folder-mappings.json"));
+        return Path.Combine(appData, "DeployToolkit", "packager-folder-mappings.json");
     }
 
     /// <summary>Extracts the server (data source) part of a SQL connection

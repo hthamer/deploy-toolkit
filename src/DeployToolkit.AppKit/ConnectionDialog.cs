@@ -1,4 +1,4 @@
-namespace DeployToolkit.AppKit;
+﻿namespace DeployToolkit.AppKit;
 
 /// <summary>
 /// Dialog to view/edit <see cref="RegistryConnectionSettings"/>: radio
@@ -132,13 +132,15 @@ public sealed class ConnectionDialog : Form
 
         // --- Package store section (Option B: shared folder, applies to BOTH modes) ---
         // Where built delta.zips are published so a Deployer on another machine
-        // can fetch them. A UNC path (\\fileserver\DeployToolkit\Packages) or a
-        // local path. Empty = no store (the .zip lives only on the builder's PC).
+        // can fetch them. A UNC path (\\fileserver\deployments) or a local
+        // path. Empty = no store (the .zip lives only on the builder's PC).
+        // The store appends DeployToolkit\Packages\<client>\<component>\
+        // itself — point this at the share's root folder.
         _packageStoreBox = new TextBox
         {
             Dock = DockStyle.Fill,
             Width = 380,
-            PlaceholderText = "\\\\fileserver\\DeployToolkit\\Packages (leave empty for local-only)",
+            PlaceholderText = "\\\\fileserver\\deployments (leave empty for local-only)",
         };
         var storeBrowseButton = new Button { Text = "Browse…" };
         AppTheme.StyleButton(storeBrowseButton);

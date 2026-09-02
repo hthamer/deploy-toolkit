@@ -26,13 +26,14 @@ public interface IPackageStore
 {
     /// <summary>
     /// Uploads (copies) the .zip at <paramref name="localZipPath"/> into the
-    /// store under a path derived from <paramref name="componentName"/> +
-    /// <paramref name="version"/>, and returns the opaque location string the
-    /// registry will record on the <see cref="Registry.PackageRecord"/>.
+    /// store under a path derived from <paramref name="clientName"/> +
+    /// <paramref name="componentName"/> + <paramref name="version"/>, and
+    /// returns the opaque location string the registry will record on the
+    /// <see cref="Registry.PackageRecord"/>.
     /// Throws on failure (IO error, unreachable share, auth refused) — the
     /// caller decides whether to treat it as fatal or best-effort.
     /// </summary>
-    Task<string> UploadAsync(string localZipPath, string componentName, string version, CancellationToken cancellationToken = default);
+    Task<string> UploadAsync(string localZipPath, string clientName, string componentName, string version, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// True when <paramref name="location"/> points at a .zip that currently

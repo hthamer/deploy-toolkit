@@ -14,10 +14,13 @@ namespace DeployToolkit.Core.Packaging;
 /// error rather than silently swallowing it.
 /// </para>
 /// <para>
-/// <b>Layout</b>: <c>&lt;root&gt;/&lt;componentName&gt;/&lt;componentName&gt;-&lt;version&gt;.zip</c>.
-/// The componentName is sanitized (invalid path chars → '_') so a component
-/// named "CMS / Web" doesn't break the folder structure. The returned
-/// location is the full path (UNC or local) the Deployer opens verbatim.
+/// <b>Layout</b>: <c>&lt;root&gt;/DeployToolkit/Packages/&lt;clientName&gt;/&lt;componentName&gt;/&lt;componentName&gt;-&lt;version&gt;.zip</c>
+/// — the same layout the Packager's default output path uses, so a .zip built
+/// straight to the default location is already "in the store" and the upload
+/// is a no-op (no duplicate copies of the same package on the share).
+/// Names are sanitized (invalid path chars → '_') so a component named
+/// "CMS / Web" doesn't break the folder structure. The returned location is
+/// the full path (UNC or local) the Deployer opens verbatim.
 /// </para>
 /// </summary>
 public sealed class FileSystemPackageStore : IPackageStore
@@ -36,10 +39,12 @@ public sealed class FileSystemPackageStore : IPackageStore
     /// <summary>The store root folder (as configured).</summary>
     public string Root => _root;
 
-    public async Task<string> UploadAsync(string localZipPath, string componentName, string version, CancellationToken cancellationToken = default)
+    public async Task<string> UploadAsync(string localZipPath, string clientName, string componentName, string version, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(localZipPath))
             throw new ArgumentException("localZipPath is required.", nameof(localZipPath));
+        if (string.IsNullOrWhiteSpace(clientName))
+            throw new ArgumentException("clientName is required.", nameof(clientName));
         if (string.IsNullOrWhiteSpace(componentName))
             throw new ArgumentException("componentName is required.", nameof(componentName));
         if (string.IsNullOrWhiteSpace(version))
@@ -47,12 +52,22 @@ public sealed class FileSystemPackageStore : IPackageStore
         if (!File.Exists(localZipPath))
             throw new FileNotFoundException($"Source .zip not found: {localZipPath}", localZipPath);
 
-        var safeComponent = MakeSafeFolderName(componentName);
-        var dir = Path.Combine(_root, safeComponent);
+        var dir = Path.Combine(_root, "DeployToolkit", "Packages",
+            MakeSafeFolderName(clientName), MakeSafeFolderName(componentName));
         Directory.CreateDirectory(dir); // throws if the share is unreachable / auth refused
 
         var fileName = MakeSafeFileName($"{componentName}-{version}") + ".zip";
         var destination = Path.Combine(dir, fileName);
+
+        // When the .zip was built straight into the store (the default output
+        // path IS the store path), source and destination are the same file —
+        // skip the copy so we don't create a second copy of the package
+        // elsewhere on the share (File.Copy onto itself would throw anyway).
+        if (string.Equals(
+                Path.GetFullPath(localZipPath),
+                Path.GetFullPath(destination),
+                StringComparison.OrdinalIgnoreCase))
+            return destination;
 
         // Overwrite any previous upload of the same component+version (a
         // rebuild): File.Copy with overwrite is atomic-enough for a delta.zip;

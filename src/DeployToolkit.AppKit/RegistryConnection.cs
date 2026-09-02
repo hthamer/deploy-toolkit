@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using DeployToolkit.Core.EfCore;
 using DeployToolkit.Core.Registry;
@@ -46,8 +46,10 @@ public sealed class RegistryConnectionSettings
     /// The shared folder where built delta.zips are published so the Deployer
     /// (on another machine) can fetch them without the builder copying the
     /// file by hand (Option B: shared folder + registry links the package).
-    /// A UNC path (<c>\\fileserver\DeployToolkit\Packages</c>) or a local
-    /// path. Null/empty = no store configured — the .zip lives only on the
+    /// A UNC path (<c>\\fileserver\deployments</c>) or a local path. The
+    /// store appends <c>DeployToolkit\Packages\&lt;client&gt;\&lt;component&gt;\</c>
+    /// to this root itself, so point it at the share's root folder.
+    /// Null/empty = no store configured — the .zip lives only on the
     /// builder's PC and must be copied to the deployer manually (the
     /// pre-Option-B behavior). Applies to BOTH modes (SqlServer and
     /// LocalFile) — the store is independent of where the registry lives.
