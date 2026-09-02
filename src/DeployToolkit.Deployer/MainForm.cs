@@ -152,14 +152,31 @@ public sealed class MainForm : Form
     internal void OnPackageLoaded()
     {
         SetStage(DeployerStage.Loaded);
+        // Unlock step 2 (Target) so the user can click Next. Without this,
+        // _maxReachedIndex stays at 0 and GoToStep(1) returns early (1 > 0).
+        if (_maxReachedIndex < 1)
+            _maxReachedIndex = 1;
+        RefreshNav();
     }
 
     /// <summary>Called by the resolve step once the target is settled: unlocks
     /// the Pre-flight step.</summary>
-    internal void OnTargetResolved() => RefreshNav();
+    internal void OnTargetResolved()
+    {
+        if (_maxReachedIndex < 2)
+            _maxReachedIndex = 2;
+        RefreshNav();
+    }
 
     /// <summary>Called by the pre-flight step when every check passes.</summary>
-    internal void OnPreflightPassed() => SetStage(DeployerStage.Ready);
+    internal void OnPreflightPassed()
+    {
+        SetStage(DeployerStage.Ready);
+        // Unlock steps 4 (Backup) and 5 (Deploy) so the user can navigate.
+        if (_maxReachedIndex < 4)
+            _maxReachedIndex = 4;
+        RefreshNav();
+    }
 
     /// <summary>Called by the deploy step when a run finished successfully.</summary>
     internal void OnRunSucceeded() => SetStage(DeployerStage.Done);

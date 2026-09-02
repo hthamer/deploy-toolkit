@@ -8,18 +8,17 @@ namespace DeployToolkit.Deployer.Stages;
 
 /// <summary>
 /// Plan §11 step 1: pick a delta.zip, run <see cref="PackageReader.VerifyIntegrity"/>,
-/// show the manifest in a TABBED view (Package Info, Assemblies, Assets,
-/// Database, Other — user request Q1), and match the zip to a registry
+/// show the manifest in a TABBED view (Package Info, App files, Assets,
+/// Database, Other — user request), and match the zip to a registry
 /// package row.
 /// </summary>
 internal sealed class StageLoadPackage : StagePanel
 {
     private readonly TextBox _zipPathBox;
     private readonly Label _messageLabel;
-    private readonly CheckBox _recordNewCheckBox;
     private TabControl _tabs = null!;
     private TextBox _infoBox = null!;
-    private DataGridView _assembliesGrid = null!;
+    private DataGridView _appFilesGrid = null!;
     private DataGridView _assetsGrid = null!;
     private DataGridView _dbGrid = null!;
     private DataGridView _otherGrid = null!;
@@ -27,45 +26,34 @@ internal sealed class StageLoadPackage : StagePanel
     public StageLoadPackage(MainForm shell) : base(shell)
     {
         var layout = MakeVerticalLayout();
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // 0: section label
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // 1: zip row
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // 2: message
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // 3: tabs (FILL)
 
-        layout.Controls.Add(AppTheme.MakeSectionLabel("Package file (delta.zip)"));
+        layout.Controls.Add(AppTheme.MakeSectionLabel("Package file (delta.zip)"), 0, 0);
 
-        var zipRow = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Dock = DockStyle.Fill };
+        // Only Browse — no "Pick from registry" (user: no need for it).
+        var zipRow = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill };
         zipRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        zipRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         zipRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _zipPathBox = new TextBox { Dock = DockStyle.Fill };
         var browseButton = new Button { Text = "Browse…" };
         AppTheme.StyleButton(browseButton);
         browseButton.Click += (_, _) => PickZipPath();
-        var pickFromRegistryButton = new Button { Text = "Pick from registry…" };
-        AppTheme.StyleButton(pickFromRegistryButton);
-        pickFromRegistryButton.Click += (_, _) => PickFromRegistry();
         zipRow.Controls.Add(_zipPathBox, 0, 0);
         zipRow.Controls.Add(browseButton, 1, 0);
-        zipRow.Controls.Add(pickFromRegistryButton, 2, 0);
-        layout.Controls.Add(zipRow);
-
-        _recordNewCheckBox = new CheckBox
-        {
-            Text = "Record as new package in the offline registry (when no matching row exists)",
-            AutoSize = true, Checked = true, Margin = new Padding(2, 6, 2, 2),
-        };
+        layout.Controls.Add(zipRow, 0, 1);
 
         _messageLabel = new Label
         {
-            Text = string.Empty, AutoSize = false, Height = 30,
+            Text = string.Empty, AutoSize = false, Height = 24,
             Dock = DockStyle.Fill, ForeColor = Color.DimGray,
         };
+        layout.Controls.Add(_messageLabel, 0, 2);
 
         BuildTabs();
-        layout.Controls.Add(_recordNewCheckBox);
-        layout.Controls.Add(_messageLabel);
-        layout.Controls.Add(_tabs);
+        layout.Controls.Add(_tabs, 0, 3);
         Controls.Add(layout);
     }
 
@@ -78,8 +66,13 @@ internal sealed class StageLoadPackage : StagePanel
         infoTab.Controls.Add(_infoBox);
         _tabs.TabPages.Add(infoTab);
 
-        _assembliesGrid = MakeFileGrid();
-        _tabs.TabPages.Add(MakeGridTab("Assemblies (bin/)", _assembliesGrid));
+        // "App files" — ALL files directly in the files/ folder (not just bin/).
+        // The user said: "load all the files directly from files folder not
+        // bin folder". So this tab shows every file from the manifest's Files
+        // list (they're all under files/ in the package — bin/ is just one
+        // subpath). Rename from "Assemblies" to "App files".
+        _appFilesGrid = MakeFileGrid();
+        _tabs.TabPages.Add(MakeGridTab("App files", _appFilesGrid));
 
         _assetsGrid = MakeFileGrid();
         _tabs.TabPages.Add(MakeGridTab("Assets (wwwroot/)", _assetsGrid));
@@ -114,20 +107,25 @@ internal sealed class StageLoadPackage : StagePanel
 
     private void PopulateTabs(ComponentManifest manifest)
     {
-        _infoBox.Text = BuildSummary(manifest, Shell.Context?.Package, Shell.Context?.Component);
-        _assembliesGrid.Rows.Clear();
+        // Package Info — no sensitive info (no git SHA, no component ID,
+        // no registry details — user: "don't print any sensitive information
+        // like git info, or component info").
+        _infoBox.Text = BuildSummary(manifest);
+
+        // App files — ALL files from the manifest (they're all in the files/
+        // folder of the package). The user said: "load all the files directly
+        // from files folder not bin folder" — so every file shows here.
+        _appFilesGrid.Rows.Clear();
         _assetsGrid.Rows.Clear();
         _otherGrid.Rows.Clear();
 
         foreach (var f in manifest.Files)
         {
             var row = new[] { f.Path, FormatBytes(f.SizeBytes), f.Hash };
-            if (f.Path.StartsWith("bin/", StringComparison.OrdinalIgnoreCase))
-                _assembliesGrid.Rows.Add(row);
-            else if (f.Path.StartsWith("wwwroot/", StringComparison.OrdinalIgnoreCase))
+            if (f.Path.StartsWith("wwwroot/", StringComparison.OrdinalIgnoreCase))
                 _assetsGrid.Rows.Add(row);
             else
-                _otherGrid.Rows.Add(row);
+                _appFilesGrid.Rows.Add(row);
         }
 
         _dbGrid.Rows.Clear();
@@ -144,16 +142,13 @@ internal sealed class StageLoadPackage : StagePanel
         if (Context is null)
         {
             _infoBox.Text = string.Empty;
-            _assembliesGrid.Rows.Clear();
+            _appFilesGrid.Rows.Clear();
             _assetsGrid.Rows.Clear();
             _dbGrid.Rows.Clear();
             _otherGrid.Rows.Clear();
             _messageLabel.ForeColor = Color.DimGray;
-            _messageLabel.Text = Shell.Store is null
-                ? "Connect to a registry first (menu: Registry Connection…)."
-                : "Pick a package file below — the integrity check runs automatically.";
+            _messageLabel.Text = "Pick a package file below — the integrity check runs automatically.";
         }
-        _recordNewCheckBox.Visible = Shell.OfflineMode;
     }
 
     internal void SetZipPath(string path) => _zipPathBox.Text = path;
@@ -183,18 +178,21 @@ internal sealed class StageLoadPackage : StagePanel
         var component = await store.GetComponentAsync(manifest.ComponentId);
         var package = await MatchPackageAsync(store, manifest);
 
-        if (package is null && Shell.OfflineMode && _recordNewCheckBox.Checked)
-        {
-            package = await store.CreatePackageAsync(manifest.ComponentId, manifest);
-            Shell.AppendLog($"No matching row — recorded as new package {package.PackageId}.");
-        }
+        // No offline registry / "Record as new" — user said no need for it.
         if (package is null)
         {
-            _messageLabel.ForeColor = Color.Firebrick;
-            _messageLabel.Text = Shell.OfflineMode
-                ? $"No package row for v{manifest.Version} — tick 'Record as new' or reconcile."
-                : $"Package not found in registry (v{manifest.Version}).";
-            return;
+            // In offline mode (local file store), auto-create the record.
+            if (Shell.OfflineMode)
+            {
+                package = await store.CreatePackageAsync(manifest.ComponentId, manifest);
+                Shell.AppendLog($"No matching row — recorded as new package {package.PackageId}.");
+            }
+            else
+            {
+                _messageLabel.ForeColor = Color.Firebrick;
+                _messageLabel.Text = $"Package not found in registry (v{manifest.Version}).";
+                return;
+            }
         }
 
         Shell.SetContext(new DeploymentContext
@@ -223,23 +221,6 @@ internal sealed class StageLoadPackage : StagePanel
         }
     }
 
-    private void PickFromRegistry()
-    {
-        var store = Shell.Store;
-        if (store is null) { AppTheme.Error(this, "Connect to a registry first."); return; }
-        using var dialog = new RegistryPackagePickerDialog(store);
-        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.ResultPackage is not { } pkg) return;
-        if (string.IsNullOrWhiteSpace(pkg.PackageLocation))
-        {
-            _messageLabel.ForeColor = Color.Firebrick;
-            _messageLabel.Text = "PackageLocation is empty — copy the .zip by hand or rebuild with a store.";
-            return;
-        }
-        _zipPathBox.Text = pkg.PackageLocation!;
-        _messageLabel.Text = $"Picked '{pkg.Version}' ({pkg.Status}) — verifying…";
-        StartLoad();
-    }
-
     private static async Task<PackageRecord?> MatchPackageAsync(IRegistryStore store, ComponentManifest manifest)
     {
         var candidates = (await store.GetPackagesForComponentAsync(manifest.ComponentId))
@@ -261,28 +242,20 @@ internal sealed class StageLoadPackage : StagePanel
         return candidates.OrderBy(c => Math.Abs((c.CreatedUtc - manifest.CreatedUtc).Ticks)).First();
     }
 
-    private static string BuildSummary(ComponentManifest m, PackageRecord? p, DeploymentComponent? c)
+    /// <summary>Package Info summary — NO sensitive info (no git SHA, no
+    /// component ID, no registry details, no health URL). User: "don't print
+    /// any sensitive information like git info, or component info."</summary>
+    private static string BuildSummary(ComponentManifest m)
     {
         var s = new StringBuilder();
-        s.AppendLine($"Package:    {p?.PackageId ?? "?"}  ({p?.Status})");
-        s.AppendLine($"Component:  {m.Client} / {m.Component}   (id {m.ComponentId})");
-        s.AppendLine($"Version:    {m.Version}    Created: {m.CreatedUtc:yyyy-MM-dd HH:mm:ss zzz}");
-        s.AppendLine($"Git commit: {ShortSha(m.GitCommitSha)}");
+        s.AppendLine($"Version:    {m.Version}");
+        s.AppendLine($"Created:    {m.CreatedUtc:yyyy-MM-dd HH:mm:ss}");
         s.AppendLine($"Framework:  {m.TargetFramework}{(m.IsSelfContained ? ", self-contained" : ", framework-dependent")}");
-        s.AppendLine($"Files:      {m.Files.Count} changed/new ({FormatBytes(m.Files.Sum(f => f.SizeBytes))}), {m.DeletedFiles.Count} deleted");
+        s.AppendLine($"Files:      {m.Files.Count} changed/new ({FormatBytes(m.Files.Sum(f => f.SizeBytes))})");
         s.AppendLine($"Config:     {(m.AppSettingsDelta.Count == 0 ? "no appsettings delta" : $"{m.AppSettingsDelta.Count} key(s)")}");
         s.AppendLine($"DB scripts: {(m.DbScripts.Count == 0 ? "none" : string.Join("; ", m.DbScripts.Select(x => $"{x.File} ({x.Kind})")))}");
-        s.AppendLine($"Health URL: {m.HealthCheckUrl ?? "(none)"}");
-        s.AppendLine($"Baseline:   {m.BaselineManifest ?? "(none)"}");
-        if (c is not null)
-            s.AppendLine($"Registry:   TargetType {c.TargetType}");
-        else
-            s.AppendLine("Registry:   component not found (offline mode)");
         return s.ToString();
     }
-
-    private static string ShortSha(string? sha) =>
-        string.IsNullOrEmpty(sha) ? "(none)" : sha.Length <= 12 ? sha : sha[..12];
 
     private static string FormatBytes(long bytes) =>
         bytes >= 1 << 20 ? $"{bytes / (double)(1 << 20):F1} MB"
