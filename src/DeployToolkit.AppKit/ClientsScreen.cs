@@ -579,16 +579,19 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
         var markSupersededButton = new Button { Text = "Mark Superseded" };
         var markCreatedButton = new Button { Text = "Mark Created (re-open)" };
         var deletePackageButton = new Button { Text = "Delete…" };
+        var openLocationButton = new Button { Text = "Open location" };
         AppTheme.StyleButton(markDeployedButton);
         AppTheme.StyleButton(markAbandonedButton);
         AppTheme.StyleButton(markSupersededButton);
         AppTheme.StyleButton(markCreatedButton);
         AppTheme.StyleButton(deletePackageButton);
+        AppTheme.StyleButton(openLocationButton);
         markDeployedButton.Click += OnMarkDeployedClick;
         markAbandonedButton.Click += (_, _) => OnMarkStatusClick(PackageStatus.Abandoned);
         markSupersededButton.Click += (_, _) => OnMarkStatusClick(PackageStatus.Superseded);
         markCreatedButton.Click += (_, _) => OnMarkStatusClick(PackageStatus.Created);
         deletePackageButton.Click += OnDeletePackageClick;
+        openLocationButton.Click += (_, _) => OpenPackageLocation();
 
         var packagesToolbar = new FlowLayoutPanel
         {
@@ -605,6 +608,7 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
         packagesToolbar.Controls.Add(markSupersededButton);
         packagesToolbar.Controls.Add(markCreatedButton);
         packagesToolbar.Controls.Add(deletePackageButton);
+        packagesToolbar.Controls.Add(openLocationButton);
 
         _packagesGrid = new DataGridView { Dock = DockStyle.Fill };
         AppTheme.StyleGrid(_packagesGrid);
@@ -1188,6 +1192,65 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
 
             await ReloadPackagesAsync();
         });
+    }
+
+    /// <summary>Opens the selected package's location (the .zip's folder) in
+    /// Windows Explorer. When the path doesn't exist (the .zip was built on
+    /// another developer's machine, or the shared store is unreachable), shows
+    /// a clear notification instead of crashing.</summary>
+    private void OpenPackageLocation()
+    {
+        if (SelectedPackage is not { } row)
+        {
+            RequireSelectedPackage("open the location of");
+            return;
+        }
+
+        var location = row.Package.PackageLocation;
+        if (string.IsNullOrWhiteSpace(location))
+        {
+            AppTheme.Error(this,
+                "This package has no recorded location (PackageLocation is empty).\n\n" +
+                "It was likely built before the PackageLocation tracking was added.\n" +
+                "Rebuild it with the latest version to record its location.", "Open location");
+            return;
+        }
+
+        // The .zip file may or may not exist on THIS machine. Check the file
+        // first; if missing, check the directory; if missing too, notify.
+        if (!File.Exists(location))
+        {
+            var dir = Path.GetDirectoryName(location);
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+            {
+                AppTheme.Error(this,
+                    $"The package is not accessible from this machine:\n\n  {location}\n\n" +
+                    "It may have been built on another developer's PC (a local-only path) " +
+                    "or the shared store is unreachable.\n\n" +
+                    "If it's a network share, check the credentials in Windows Credential Manager " +
+                    "and the share's availability. If it's another dev's local path, ask them " +
+                    "to copy the .zip to you or rebuild with a shared store configured.",
+                    "Open location");
+                return;
+            }
+
+            // Directory exists but the .zip is gone — open the folder anyway
+            // so the user can look around (maybe a newer version replaced it).
+            location = dir;
+        }
+
+        try
+        {
+            // If it's a file, select it in Explorer; if it's a directory, open it.
+            if (File.Exists(location))
+                System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{location}\"");
+            else if (Directory.Exists(location))
+                System.Diagnostics.Process.Start("explorer.exe", $"\"{location}\"");
+        }
+        catch (Exception ex)
+        {
+            AppTheme.Error(this, $"Could not open the location: {ex.Message}", "Open location");
+        }
     }
 
     private void OnMarkStatusClick(PackageStatus status)
