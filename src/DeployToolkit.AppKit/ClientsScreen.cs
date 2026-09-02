@@ -99,6 +99,16 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
     private Button _backButton = null!;
     private Button _openButton = null!;
 
+    /// <summary>
+    /// Optional hook fired AFTER a package is marked Deployed. The Packager's
+    /// shell hooks this to create a git tag at the package's commit SHA (user
+    /// request: auto-tag on deploy). The Deployer doesn't hook it (the user
+    /// said to implement git tagging in the Packager only for now). Parameters:
+    /// the PackageRecord that was marked deployed, and its deserialized
+    /// ComponentManifest (carries GitCommitSha + Version).
+    /// </summary>
+    public event Action<PackageRecord, ComponentManifest>? PackageDeployed;
+
     public ClientsScreen(IRegistryStore registry)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
@@ -1159,6 +1169,23 @@ public sealed class ClientsScreen : Form, IGuardedCloseScreen
         {
             await _registry.MarkDeployedAsync(row.Package.PackageId, deployedBy, DateTimeOffset.UtcNow);
             ShowTransientStatus("Marked deployed ✓");
+
+            // Fire the optional PackageDeployed hook so the Packager's shell
+            // can create a git tag at the package's commit SHA. Best-effort —
+            // a tagging failure never undoes the "Mark Deployed" status. The
+            // Deployer doesn't hook this event, so it's a no-op there.
+            try
+            {
+                if (PackageDeployed is not null)
+                {
+                    // Deserialize the manifest from the package record so the
+                    // hook gets the GitCommitSha + Version + Component name.
+                    var manifest = ManifestSerializer.Deserialize(row.Package.ManifestJson);
+                    PackageDeployed(row.Package, manifest);
+                }
+            }
+            catch { /* tagging is best-effort — never block the deploy status */ }
+
             await ReloadPackagesAsync();
         });
     }

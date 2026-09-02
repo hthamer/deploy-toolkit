@@ -57,6 +57,23 @@ public sealed class RegistryConnectionSettings
     public string? PackageStoreRootPath { get; set; }
 
     /// <summary>
+    /// Git tag template applied automatically when a package is marked as
+    /// Deployed (in the Packager's Clients screen). The tag is created at the
+    /// package's <c>GitCommitSha</c> in the local git repo and pushed to
+    /// origin (best-effort). Placeholders:
+    /// <list type="bullet">
+    ///  <item><c>{version}</c> → the package version (e.g. 1.0.2)</item>
+    ///  <item><c>{date}</c> → yyyyMMdd (e.g. 20260902)</item>
+    ///  <item><c>{datetime}</c> → yyyyMMdd-HHmmss</item>
+    ///  <item><c>{component}</c> → the component name (sanitized, no spaces)</item>
+    /// </list>
+    /// Default: <c>deploy-{version}-{date}</c> (Option A). Set to null/empty
+    /// to disable auto-tagging. The Deployer app doesn't use this (it has its
+    /// own flow — the user said to implement it in the Packager only for now).
+    /// </summary>
+    public string? GitTagTemplate { get; set; } = "deploy-{version}-{date}";
+
+    /// <summary>
     /// Where the shells persist these settings by default:
     /// %APPDATA%\DeployToolkit\packager-registry.json (falls back to the
     /// current directory when %APPDATA% is unavailable, e.g. on some CI hosts).

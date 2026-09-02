@@ -387,6 +387,28 @@ static async Task<bool> CaptureStateAsync(Func<Task> run)
     catch { return false; }
 }
 
+// ---------------------------------------------------------------
+Console.WriteLine("== GitTagger.FormatTagName (tag template formatting) ==");
+Check("default template: deploy-{version}-{date}",
+    GitTagger.FormatTagName("deploy-{version}-{date}", "1.0.2", "Website",
+        new DateTimeOffset(2026, 9, 2, 14, 30, 15, TimeSpan.Zero)) == "deploy-1.0.2-20260902");
+Check("{datetime} placeholder expands to yyyyMMdd-HHmmss",
+    GitTagger.FormatTagName("deploy-{version}-{datetime}", "2.0.0", "CMS",
+        new DateTimeOffset(2026, 9, 2, 14, 30, 15, TimeSpan.Zero)) == "deploy-2.0.0-20260902-143015");
+Check("{component} placeholder is used + sanitized",
+    GitTagger.FormatTagName("deploy/{component}/{version}", "1.0", "Web Site",
+        new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero)) == "deploy/Web_Site/1.0");
+Check("empty template returns empty string",
+    GitTagger.FormatTagName("", "1.0", "X") == string.Empty);
+Check("null template returns empty string",
+    GitTagger.FormatTagName(null!, "1.0", "X") == string.Empty);
+Check("case-insensitive placeholders",
+    GitTagger.FormatTagName("deploy-{VERSION}-{DATE}", "1.0.2", "CMS",
+        new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero)) == "deploy-1.0.2-20260902");
+Check("special chars in component are sanitized to _",
+    GitTagger.FormatTagName("deploy-{component}", "1.0", "Web~Site^v2",
+        new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero)) == "deploy-Web_Site_v2");
+
 Console.WriteLine();
 Console.WriteLine($"== {passed} passed, {failures.Count} failed ==");
 if (failures.Count > 0)

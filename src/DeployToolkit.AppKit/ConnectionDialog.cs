@@ -29,6 +29,7 @@ public sealed class ConnectionDialog : Form
     private readonly TextBox _connectionStringBox;
     private readonly TextBox _localRootBox;
     private readonly TextBox _packageStoreBox;
+    private readonly TextBox _gitTagTemplateBox;
     private readonly Label _statusLabel;
     private readonly Func<RegistryConnectionSettings, bool>? _onApplied;
 
@@ -52,7 +53,7 @@ public sealed class ConnectionDialog : Form
         MaximizeBox = false;
         MinimizeBox = false;
         AppTheme.Apply(this);
-        Size = new Size(680, 600);
+        Size = new Size(680, 680);
 
         var layout = new TableLayoutPanel
         {
@@ -161,6 +162,26 @@ public sealed class ConnectionDialog : Form
         layout.Controls.Add(AppTheme.MakeSectionLabel("Package store (shared folder — Option B)"));
         layout.Controls.Add(storeRow);
 
+        // --- Git tag template (auto-tag on deploy) ---
+        _gitTagTemplateBox = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Width = 380,
+            PlaceholderText = "deploy-{version}-{date}",
+        };
+        var tagHint = new Label
+        {
+            Text = "Placeholders: {version} {date} (yyyyMMdd) {datetime} (yyyyMMdd-HHmmss) {component}. Leave empty to disable auto-tagging.",
+            AutoSize = true,
+            ForeColor = Color.DimGray,
+            Margin = new Padding(2, 2, 2, 6),
+        };
+        var tagPanel = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill };
+        tagPanel.Controls.Add(_gitTagTemplateBox);
+        tagPanel.Controls.Add(tagHint);
+        layout.Controls.Add(AppTheme.MakeSectionLabel("Git tag template (auto-tag on deploy)"));
+        layout.Controls.Add(tagPanel);
+
         // --- status line (test result) ---
         _statusLabel = new Label
         {
@@ -206,6 +227,7 @@ public sealed class ConnectionDialog : Form
         _connectionStringBox.Text = current.ConnectionString ?? string.Empty;
         _localRootBox.Text = current.LocalRoot ?? string.Empty;
         _packageStoreBox.Text = current.PackageStoreRootPath ?? string.Empty;
+        _gitTagTemplateBox.Text = current.GitTagTemplate ?? string.Empty;
     }
 
     private RegistryMode SelectedMode => _sqlServerRadio.Checked ? RegistryMode.SqlServer : RegistryMode.LocalFile;
@@ -229,6 +251,7 @@ public sealed class ConnectionDialog : Form
         ConnectionString = NullIfEmpty(_connectionStringBox.Text),
         LocalRoot = NullIfEmpty(_localRootBox.Text),
         PackageStoreRootPath = NullIfEmpty(_packageStoreBox.Text),
+        GitTagTemplate = NullIfEmpty(_gitTagTemplateBox.Text),
     };
 
     private async Task TestConnectionAsync()

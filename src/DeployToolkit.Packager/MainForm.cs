@@ -1,4 +1,5 @@
 using DeployToolkit.AppKit;
+using DeployToolkit.Core.Manifest;
 using DeployToolkit.Core.Packaging;
 using DeployToolkit.Core.Registry;
 
@@ -295,6 +296,116 @@ public sealed class MainForm : Form
         return new DeployToolkit.Core.Packaging.FileSystemPackageStore(settings.PackageStoreRootPath!);
     }
 
+    /// <summary>
+    /// Fired by the Clients screen when a package is marked Deployed. Creates
+    /// a git tag at the package's commit SHA (from the manifest) using the
+    /// configured <see cref="RegistryConnectionSettings.GitTagTemplate"/>, and
+    /// pushes it to origin (best-effort). Best-effort: a tagging failure is
+    /// surfaced as a status-strip message but never undoes the "Deployed" status.
+    /// The Deployer app doesn't hook this event (the user said to implement git
+    /// tagging in the Packager only for now).
+    /// </summary>
+    private void OnPackageDeployed(PackageRecord package, ComponentManifest manifest)
+    {
+        var template = _settings.GitTagTemplate;
+        if (string.IsNullOrWhiteSpace(template))
+            return; // auto-tagging disabled
+
+        if (string.IsNullOrWhiteSpace(manifest.GitCommitSha))
+        {
+            // No commit SHA recorded (the package was built without git sync —
+            // e.g. a non-git folder or the Fetch & Pull checkbox was unchecked).
+            // Nothing to tag.
+            return;
+        }
+
+        // Reverse-lookup the local git folder from the componentId via the
+        // mapping store (the mapping is folder → componentId; we need the
+        // reverse). The mapping store is a JSON dictionary; we read it to find
+        // the folder for this component.
+        var localFolder = FindLocalFolderForComponent(package.ComponentId);
+        if (localFolder is null)
+        {
+            // No folder mapped to this component on this machine — the package
+            // may have been built on another dev's PC. Can't tag locally.
+            return;
+        }
+
+        // Format the tag name.
+        var tagName = DeployToolkit.Core.Git.GitTagger.FormatTagName(
+            template!, manifest.Version, manifest.Component);
+
+        // Create + push the tag asynchronously (LibGit2Sharp is synchronous —
+        // run off the UI thread). Best-effort: never throw past the caller.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var result = await DeployToolkit.Core.Git.GitTagger.TagAndPushAsync(
+                    localFolder, manifest.GitCommitSha!, tagName,
+                    tagMessage: $"Deployed {manifest.Version} on {DateTimeOffset.UtcNow:u}");
+
+                if (this.IsDisposed) return;
+
+                this.BeginInvoke(() =>
+                {
+                    if (result.Success)
+                    {
+                        _statusLabel.Text = string.IsNullOrEmpty(result.ErrorMessage)
+                            ? $"Git tag '{result.TagName}' created + pushed ✓"
+                            : $"Git tag '{result.TagName}' created locally ✓ ({result.ErrorMessage})";
+                    }
+                    else
+                    {
+                        _statusLabel.Text = $"Git tag failed: {result.ErrorMessage}";
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                if (this.IsDisposed) return;
+                this.BeginInvoke(() => _statusLabel.Text = $"Git tag error: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>Reverse-lookups the local git folder mapped to
+    /// <paramref name="componentId"/> from the mapping store's JSON file. The
+    /// mapping store is a <c>folder → componentId</c> dictionary; we scan it
+    /// for the first entry whose value matches. Returns null when no mapping
+    /// exists for this component on this machine (the package may have been
+    /// built on another dev's PC).</summary>
+    private string? FindLocalFolderForComponent(string componentId)
+    {
+        try
+        {
+            // The mapping file path — mirrors what JsonFileProjectMappingStore
+            // uses. The Packager constructs it from DeployerPaths or
+            // %APPDATA%\DeployToolkit\packager-mappings.json.
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrWhiteSpace(appData))
+                return null;
+            var mappingFile = Path.Combine(appData, "DeployToolkit", "packager-mappings.json");
+            if (!File.Exists(mappingFile))
+                return null;
+
+            var json = File.ReadAllText(mappingFile);
+            var map = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+            if (map is null) return null;
+
+            foreach (var (folder, id) in map)
+            {
+                if (string.Equals(id, componentId, StringComparison.Ordinal))
+                    return folder;
+            }
+            return null;
+        }
+        catch
+        {
+            return null; // unreadable mapping file — skip tagging
+        }
+    }
+
     private void UpdateConnectionUi()
     {
         var connected = _store is not null;
@@ -469,6 +580,11 @@ public sealed class MainForm : Form
                 if (_store is null)
                     return;
                 var clients = new ClientsScreen(_store);
+                // Hook the PackageDeployed event to auto-create a git tag at
+                // the package's commit SHA (user request: auto-tag on deploy).
+                // The Deployer doesn't hook this (the user said to implement
+                // git tagging in the Packager only for now).
+                clients.PackageDeployed += OnPackageDeployed;
                 _clientsScreen = clients;
                 screen = clients;
                 break;
