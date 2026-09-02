@@ -311,21 +311,26 @@ try
     File.WriteAllText(Path.Combine(migrationsDir, "20260301120000_AddIndexes.Designer.cs"), "// designer");
     File.WriteAllText(Path.Combine(migrationsDir, "AppDbContextModelSnapshot.cs"), "// snapshot");
 
-    // A non-migration .cs file (no timestamp_<name> pattern) — should be excluded.
-    File.WriteAllText(Path.Combine(migrationsDir, "RandomFile.cs"), "// not a migration");
+    // A custom-named .cs file (no timestamp_<name> pattern) — kept as a
+    // fallback (lenient matching: better to show a false positive than to
+    // hide a real migration the team renamed).
+    File.WriteAllText(Path.Combine(migrationsDir, "CustomMigration.cs"), "// custom");
     // A stray subdirectory (should be ignored — we scan files, not dirs).
     Directory.CreateDirectory(Path.Combine(migrationsDir, "20260401120000_StrayDir"));
 
     var discovered = MigrationScriptGenerator.DiscoverMigrations(efRoot);
-    Check("discovers all 3 EF migrations (files, not dirs)", discovered.Count == 3);
+    // 3 timestamped migrations + 1 fallback (CustomMigration) = 4 total.
+    Check("discovers 3 timestamped + 1 fallback = 4 total", discovered.Count == 4);
+    // Timestamped come first (newest-first), then fallback (alphabetical).
     Check("newest-first ordering (AddIndexes first)",
         discovered[0].Name == "20260301120000_AddIndexes");
     Check("second is AddUsers", discovered[1].Name == "20260201120000_AddUsers");
-    Check("oldest is InitialCreate", discovered[2].Name == "20260101120000_InitialCreate");
+    Check("oldest timestamped is InitialCreate", discovered[2].Name == "20260101120000_InitialCreate");
+    Check("fallback (CustomMigration) comes after timestamped, alphabetical",
+        discovered[3].Name == "CustomMigration");
     Check("DisplayName strips the timestamp prefix", discovered[0].DisplayName == "AddIndexes");
     Check(".Designer.cs files excluded", !discovered.Any(m => m.Name.EndsWith(".Designer")));
     Check("ModelSnapshot.cs excluded", !discovered.Any(m => m.Name.Contains("ModelSnapshot")));
-    Check("non-migration .cs file excluded", !discovered.Any(m => m.Name == "RandomFile"));
     Check("stray subdirectory ignored", !discovered.Any(m => m.Name == "20260401120000_StrayDir"));
 
     Check("missing project folder yields empty list",

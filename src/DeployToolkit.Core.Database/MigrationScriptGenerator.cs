@@ -62,13 +62,24 @@ public static class MigrationScriptGenerator
     /// pair <c>&lt;timestamp&gt;_&lt;Name&gt;.cs</c> +
     /// <c>&lt;timestamp&gt;_&lt;Name&gt;.Designer.cs</c>, plus a single
     /// <c>&lt;DbContext&gt;ModelSnapshot.cs</c>. This method scans the .cs
-    /// FILES in the Migrations folder, picks the migration files (timestamp +
-    /// underscore + name, excluding <c>.Designer.cs</c> and
-    /// <c>ModelSnapshot.cs</c>), and returns each as a
-    /// <see cref="EfMigration"/> with the full migration name
-    /// (<c>20260901120000_InitialCreate</c>), newest-first by timestamp.
+    /// FILES in the Migrations folder and returns each migration, newest-first
+    /// by timestamp (when present) or alphabetically (fallback).
+    ///
+    /// <b>Matching is deliberately lenient</b> to handle real-world layouts:
+    ///  - Standard EF Core: <c>&lt;14-digit-timestamp&gt;_&lt;Name&gt;.cs</c>
+    ///    (e.g. <c>20240115103045_InitialCreate.cs</c>).
+    ///  - Older EF / custom: any all-digit prefix of any length followed by
+    ///    <c>_&lt;Name&gt;.cs</c> (not just 14 digits — some teams use shorter
+    ///    or longer timestamps).
+    ///  - Fallback (no timestamp prefix at all): any <c>&lt;Name&gt;.cs</c>
+    ///    that isn't a generated <c>.Designer.cs</c> or <c>*ModelSnapshot.cs</c>
+    ///    and isn't obviously a non-migration (the user can deselect in the UI).
+    /// This matches the user's request: "scan the Migrations folder and get
+    /// those migrations files then try to generate the script" — don't rely
+    /// on a strict timestamp pattern.
+    ///
     /// Returns an empty list when the Migrations folder is absent or holds no
-    /// migration-shaped files.
+    /// .cs files at all.
     /// </summary>
     public static IReadOnlyList<EfMigration> DiscoverMigrations(string dbProjectFolder)
     {
@@ -79,10 +90,9 @@ public static class MigrationScriptGenerator
         if (!Directory.Exists(migrationsDir))
             return Array.Empty<EfMigration>();
 
-        var migrations = new List<(long Timestamp, string Name, string Path)>();
-        // EF Core migrations are FILES named <timestamp>_<Name>.cs — scan the
-        // .cs files directly (NOT subdirectories; the earlier directory-based
-        // scan found nothing because EF Core never creates migration subfolders).
+        var timestamped = new List<(long Timestamp, string Name, string Path)>();
+        var fallback = new List<(string Name, string Path)>();
+
         foreach (var file in Directory.EnumerateFiles(migrationsDir, "*.cs"))
         {
             var fileName = Path.GetFileNameWithoutExtension(file);
@@ -94,28 +104,33 @@ public static class MigrationScriptGenerator
                 continue;
 
             var underscore = fileName.IndexOf('_');
-            if (underscore <= 0)
-                continue; // not a migration file (migrations are <timestamp>_<name>)
+            if (underscore > 0)
+            {
+                var tsStr = fileName[..underscore];
+                // Any all-digit prefix (any length ≥ 1) followed by _<Name>.cs
+                // is a timestamped migration. EF Core uses 14 digits but older
+                // EF / custom setups may differ.
+                if (tsStr.Length > 0 && tsStr.All(char.IsDigit) && long.TryParse(tsStr, out var ts))
+                {
+                    timestamped.Add((ts, fileName, file));
+                    continue;
+                }
+            }
 
-            var tsStr = fileName[..underscore];
-            // EF timestamps are yyyyMMddHHmmss (14 digits). Be lenient: accept
-            // 12-16 digits so older EF formats (yyyyMMddHHmm) still work.
-            if (tsStr.Length < 12 || tsStr.Length > 16 || !tsStr.All(char.IsDigit))
-                continue;
-
-            if (!long.TryParse(tsStr, out var ts))
-                continue;
-
-            // The full migration name = the file name without the extension
-            // (e.g. "20260901120000_InitialCreate"). This is what
-            // `dotnet ef migrations script` accepts as --from/--to.
-            migrations.Add((ts, fileName, file));
+            // Fallback: a .cs file with no numeric timestamp prefix. Could be
+            // a custom-named migration (some teams rename them). Keep it so
+            // the user sees it in the grid and can decide — better to show a
+            // false positive than to hide a real migration.
+            fallback.Add((fileName, file));
         }
 
-        return migrations
-            .OrderByDescending(m => m.Timestamp)
-            .Select(m => new EfMigration(m.Name, m.Path))
-            .ToList();
+        // Timestamped migrations newest-first; fallback alphabetical.
+        var result = new List<EfMigration>();
+        foreach (var m in timestamped.OrderByDescending(m => m.Timestamp))
+            result.Add(new EfMigration(m.Name, m.Path));
+        foreach (var m in fallback.OrderBy(m => m.Name, StringComparer.Ordinal))
+            result.Add(new EfMigration(m.Name, m.Path));
+        return result;
     }
 
     /// <summary>

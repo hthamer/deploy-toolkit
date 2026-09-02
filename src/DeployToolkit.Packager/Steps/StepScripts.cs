@@ -125,7 +125,7 @@ internal sealed class StepScripts : WizardStep
         {
             Text = string.Empty,
             AutoSize = false,
-            Height = 36,
+            Height = 52, // tall enough for the diagnostic message (path + hint)
             Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
         };
@@ -329,9 +329,15 @@ internal sealed class StepScripts : WizardStep
         _loadingEfGrid = false;
 
         var pending = _efMigrations.Count(m => !applied.Contains(m.Name));
+        var migrationsPath = Draft.EfMigrationsProjectPath is { } p
+            ? Path.Combine(p, "Migrations")
+            : "(no project selected)";
         _efHintLabel.Text = _efMigrations.Count == 0
-            ? "No EF migrations found in this project's Migrations folder."
-            : $"{_efMigrations.Count} migration(s) found, {pending} pending (auto-checked). " +
+            ? $"No EF migrations found. Scanned: {migrationsPath}. " +
+              "Make sure the selected project has a 'Migrations' folder with .cs files " +
+              "(e.g. <timestamp>_MigrationName.cs). If the folder exists but no .cs files " +
+              "are shown, check the folder path is correct."
+            : $"{_efMigrations.Count} migration(s) found in {migrationsPath}, {pending} pending (auto-checked). " +
               "Checked migrations generate a script on build and are recorded as applied in the manifest.";
     }
 
