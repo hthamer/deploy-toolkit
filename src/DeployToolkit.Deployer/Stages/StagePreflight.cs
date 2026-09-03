@@ -115,12 +115,33 @@ internal sealed class StagePreflight : StagePanel
 
         if (type == TargetType.IisLocal)
         {
-            if (_siteRootBox.Text.Trim().Length == 0)
+            // Site root + appsettings path — always re-set from the resolved
+            // IIS physical path (readonly fields; the user picks the IIS app
+            // in step 2, not here).
+            _siteRootBox.Text = context.IisTarget?.PhysicalPath ?? string.Empty;
+            _appSettingsBox.Text = string.IsNullOrWhiteSpace(_siteRootBox.Text)
+                ? string.Empty
+                : Path.Combine(_siteRootBox.Text.Trim(), "appsettings.json");
+
+            // Warn if appsettings.json is not found at the site root.
+            if (!string.IsNullOrWhiteSpace(_appSettingsBox.Text) && !File.Exists(_appSettingsBox.Text))
             {
-                _siteRootBox.Text = context.IisTarget?.PhysicalPath ?? string.Empty;
-                _appSettingsBox.Text = string.IsNullOrWhiteSpace(_siteRootBox.Text)
-                    ? string.Empty
-                    : Path.Combine(_siteRootBox.Text.Trim(), "appsettings.json");
+                _resultLabel.ForeColor = Color.DarkOrange;
+                _resultLabel.Text = $"Warning: appsettings.json not found at {_appSettingsBox.Text} — " +
+                    "the delta will be created on merge, but verify the path.";
+            }
+            else if (string.IsNullOrWhiteSpace(_siteRootBox.Text))
+            {
+                _resultLabel.ForeColor = Color.Firebrick;
+                _resultLabel.Text = "IIS physical path is not resolved — go back to step 2 and select an IIS application.";
+            }
+
+            // Auto-fetch DB connection string from appsettings.json (no
+            // manual button click needed). For .NET Framework WebForms
+            // (web.config), this will fail and the user types it manually.
+            if (!string.IsNullOrWhiteSpace(_appSettingsBox.Text) && File.Exists(_appSettingsBox.Text))
+            {
+                ReadDbConnectionString();
             }
         }
 
@@ -139,50 +160,24 @@ internal sealed class StagePreflight : StagePanel
     private TableLayoutPanel BuildIisPanel()
     {
         var panel = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill };
-        panel.Controls.Add(AppTheme.MakeSectionLabel("IIS site root (files deploy here)"));
 
-        var siteRow = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill };
-        siteRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        siteRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _siteRootBox = new TextBox { Dock = DockStyle.Fill };
-        var browse = new Button { Text = "Browse…" };
-        AppTheme.StyleButton(browse);
-        browse.Click += (_, _) =>
-        {
-            using var picker = new FolderBrowserDialog
-            {
-                Description = "The site root the package's files are copied into.",
-                ShowNewFolderButton = true,
-            };
-            if (Directory.Exists(_siteRootBox.Text))
-                picker.SelectedPath = _siteRootBox.Text;
-            if (picker.ShowDialog(this) == DialogResult.OK)
-            {
-                _siteRootBox.Text = picker.SelectedPath;
-                _appSettingsBox.Text = Path.Combine(picker.SelectedPath, "appsettings.json");
-            }
-        };
-        siteRow.Controls.Add(_siteRootBox, 0, 0);
-        siteRow.Controls.Add(browse, 1, 0);
-        panel.Controls.Add(siteRow);
+        // Site root — READONLY (comes from the resolved IIS physical path;
+        // the user picks the IIS app in step 2, not here).
+        panel.Controls.Add(AppTheme.MakeSectionLabel("IIS site root (resolved from the selected IIS application)"));
+        _siteRootBox = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.WhiteSmoke };
+        panel.Controls.Add(_siteRootBox);
 
+        // appsettings.json path — READONLY (derived from the site root).
         panel.Controls.Add(AppTheme.MakeSectionLabel("appsettings.json (the manifest's delta is merged into it)"));
-        _appSettingsBox = new TextBox { Dock = DockStyle.Fill };
+        _appSettingsBox = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.WhiteSmoke };
         panel.Controls.Add(_appSettingsBox);
 
-        // DB connection string — auto-read from appsettings.json's
-        // ConnectionStrings section (.NET Core apps); for .NET Framework
-        // WebForms the user types it manually (from web.config).
-        panel.Controls.Add(AppTheme.MakeSectionLabel("Database connection string (auto-read from appsettings.json or type manually)"));
+        // DB connection string — auto-fetched from appsettings.json (read-
+        // only display of the auto-fetched value; the user can still type
+        // manually for WebForms apps that use web.config instead).
+        panel.Controls.Add(AppTheme.MakeSectionLabel("Database connection string (auto-fetched from appsettings.json)"));
         _dbConnBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
         panel.Controls.Add(_dbConnBox);
-
-        // Auto-read button — parses the ConnectionStrings:Default key from
-        // the appsettings.json at the site root.
-        var readDbButton = new Button { Text = "Read from appsettings…" };
-        AppTheme.StyleButton(readDbButton);
-        readDbButton.Click += (_, _) => ReadDbConnectionString();
-        panel.Controls.Add(readDbButton);
 
         return panel;
     }
