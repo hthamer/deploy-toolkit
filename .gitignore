@@ -56,3 +56,6 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 /.vs
+
+# DeployToolkit.Api local dev store (Database:Provider=Sqlite in Development)
+src/DeployToolkit.Api/registry-dev.db*

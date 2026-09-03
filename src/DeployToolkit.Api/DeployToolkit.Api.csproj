@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <!--
+      net8.0 to match DeployToolkit.Core / DeployToolkit.Core.EfCore (same
+      note as there: bump EF + JwtBearer packages together when the solution
+      retargets to net10.0-windows).
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DeployToolkit.Api</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Same registry database the Packager app uses (plan §2.2). The EF
+         model + SQL Server migrations live in DeployToolkit.Core.EfCore. -->
+    <ProjectReference Include="..\DeployToolkit.Core.EfCore\DeployToolkit.Core.EfCore.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Issues the JWT access tokens returned by /api/auth/authenticate and
+         protects the endpoints that require an authenticated caller. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.11" />
+    <!-- The EF model is provider-neutral (see RegistryDbContext): SQLite is
+         for local dev / smoke tests ONLY (EnsureCreated, no migrations) —
+         exactly the same split the EfCore.SelfTest harness uses. Production
+         is SQL Server / Azure SQL via ConnectionStrings:Registry. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.11" />
+    <!-- Swagger UI for exploring/testing the endpoints in Development. -->
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+  </ItemGroup>
+
+</Project>

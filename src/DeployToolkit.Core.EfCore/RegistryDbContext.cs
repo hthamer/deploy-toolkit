@@ -39,6 +39,13 @@ public sealed class RegistryDbContext : DbContext
     public DbSet<PackageRecord> Packages => Set<PackageRecord>();
     public DbSet<DeploymentRunRecord> DeploymentRuns => Set<DeploymentRunRecord>();
 
+    /// <summary>
+    /// REST API credentials for <c>DeployToolkit.Api</c> (Phase 1: the
+    /// authenticate endpoint). Same registry DB, same migration pipeline —
+    /// the Packager/Deployer simply never query this table.
+    /// </summary>
+    public DbSet<ApiUser> ApiUsers => Set<ApiUser>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Client>(e =>
@@ -142,6 +149,24 @@ public sealed class RegistryDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             e.HasIndex(r => r.PackageId);
+        });
+
+        modelBuilder.Entity<ApiUser>(e =>
+        {
+            e.ToTable("ApiUsers");
+            e.HasKey(u => u.UserId);
+            e.Property(u => u.UserId).HasMaxLength(32).ValueGeneratedNever();
+            e.Property(u => u.Username).HasMaxLength(100);
+            e.Property(u => u.DisplayName).HasMaxLength(200);
+            // pbkdf2-sha256$iter$saltB64$subkeyB64 — comfortably inside 500.
+            e.Property(u => u.PasswordHash).HasMaxLength(500);
+            e.Property(u => u.CreatedUtc);
+            e.Property(u => u.LastLoginUtc);
+
+            // Login name is the lookup key — case-insensitive uniqueness is
+            // enforced in the API (same ToLower() semantics as client names);
+            // the plain unique index still guards against raw duplicates.
+            e.HasIndex(u => u.Username).IsUnique();
         });
     }
 }
