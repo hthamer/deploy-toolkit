@@ -138,7 +138,7 @@ internal sealed class StageResolveTarget : StagePanel
                         _messageLabel.Text = "IIS control requires the Deployer to run on the target server with IIS 7+ " +
                                              $"installed and configuration access. ({ex.Message})";
                     });
-                    return;
+                    return Task.CompletedTask;
                 }
 
                 this.BeginInvoke(() =>
