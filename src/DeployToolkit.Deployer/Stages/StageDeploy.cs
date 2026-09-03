@@ -396,8 +396,10 @@ internal sealed class StageDeploy : StagePanel
                 "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES " +
                 "WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME");
 
-            foreach (var (schema, table) in tables)
+            foreach (var row in tables)
             {
+                var schema = row[0];
+                var table = row[1];
                 sb.AppendLine($"-- ============================================================");
                 sb.AppendLine($"-- Table: [{schema}].[{table}]");
                 sb.AppendLine($"-- ============================================================");
