@@ -36,4 +36,12 @@
     <ProjectReference Include="..\DeployToolkit.Core.Targets.Plesk\DeployToolkit.Core.Targets.Plesk.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- SQL Server Management Objects (SMO) — generates full database scripts
+         (schema + data + triggers + SPs + indexes + constraints + FKs) with
+         the same fidelity as SSMS "Generate Scripts". Works on SQL Server
+         2016 through 2022+ and on AWS RDS (no BACKUP DATABASE TO DISK needed). -->
+    <PackageReference Include="Microsoft.SqlServer.SqlManagementObjects" Version="171.50.0" />
+  </ItemGroup>
+
 </Project>
