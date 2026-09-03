@@ -71,25 +71,21 @@ public static class AuthEndpoints
                 new ErrorResponse("Both 'username' and 'password' are required."),
                 statusCode: StatusCodes.Status400BadRequest);
 
-        // --- credential lookup + verification ---
-        var user = await db.ApiUsers
-            .FirstOrDefaultAsync(u => u.Username.ToLower() == username.ToLower());
-        // ToLower() on both sides translates to SQL LOWER on SQL Server and
-        // SQLite alike — same case-insensitive semantics the registry uses
-        // for client names (see EfCoreRegistryStore.FindClientByNameAsync).
+        // --- credential lookup + verification (shared with /api/deploy;
+        //     see CredentialValidator for the security semantics) ---
+        var outcome = await CredentialValidator.ValidateAsync(
+            db, hasher, username, password!, http.RequestAborted);
 
-        if (user is null)
+        if (outcome.Result == CredentialValidationResult.UnknownOrWrongPassword)
         {
-            // Burn the same PBKDF2 work a real lookup+verify would: unknown
-            // usernames become timing-indistinguishable from wrong passwords.
-            hasher.Verify(password, "<malformed>");
             logger.LogWarning(
-                "Authentication failed for unknown username '{Username}' from {RemoteIp}.",
+                "Authentication failed for '{Username}' from {RemoteIp} " +
+                "(unknown username or wrong password).",
                 username, http.Connection.RemoteIpAddress);
             return InvalidCredentials();
         }
 
-        if (!user.IsActive)
+        if (outcome.Result == CredentialValidationResult.Disabled)
         {
             logger.LogWarning(
                 "Authentication attempt for DISABLED API user '{Username}' from {RemoteIp}.",
@@ -99,13 +95,7 @@ public static class AuthEndpoints
                 statusCode: StatusCodes.Status401Unauthorized);
         }
 
-        if (!hasher.Verify(password, user.PasswordHash))
-        {
-            logger.LogWarning(
-                "Authentication failed (wrong password) for API user '{Username}' from {RemoteIp}.",
-                username, http.Connection.RemoteIpAddress);
-            return InvalidCredentials();
-        }
+        var user = outcome.User!;
 
         // --- success: stamp last login, answer with the rotation metadata ---
         user.LastLoginUtc = DateTimeOffset.UtcNow;

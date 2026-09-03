@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
@@ -63,14 +64,27 @@ public static class RegistryApiClient
 
     /// <summary>Reports a completed deployment to the central API's deploy
     /// endpoint (POST <c>{baseUrl}/api/deploy</c>, camelCase JSON body of
-    /// <see cref="ApiDeploymentReport"/>). Never throws: HTTP 2xx is
-    /// (true, detail), anything else is (false, detail) with the status code
-    /// and the API's response body.</summary>
+    /// <see cref="ApiDeploymentReport"/>). The session's registry credentials
+    /// ride in the HTTP Basic header — the API is token-free: every request
+    /// presents the username/password that match the credentials saved in the
+    /// registry database. Never throws: HTTP 2xx is (true, detail), anything
+    /// else is (false, detail) with the status code and the API's response
+    /// body.</summary>
     public static async Task<(bool Success, string Detail)> ReportDeploymentAsync(
-        string baseUrl, ApiDeploymentReport report)
+        string baseUrl, ApiDeploymentReport report, string? username, string? password)
     {
         var url = $"{baseUrl.TrimEnd('/')}/{DeployPath}";
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+
+        // Token-free per-request credentials (same pair the Login button
+        // verified against /api/auth/authenticate). Missing credentials are
+        // still sent as no auth — the API answers 401 with a readable body.
+        if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Basic",
+                Convert.ToBase64String(Encoding.UTF8.GetBytes($"{username}:{password}")));
+        }
 
         try
         {

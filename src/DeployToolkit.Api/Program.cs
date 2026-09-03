@@ -1,4 +1,5 @@
 using DeployToolkit.Api.Auth;
+using DeployToolkit.Api.Deploy;
 using DeployToolkit.Api.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
@@ -96,6 +97,7 @@ app.MapGet("/", () => Results.Ok(new
     endpoints = new[]
     {
         "POST /api/auth/authenticate",
+        "POST /api/deploy (HTTP Basic credentials + deploy report)",
         "GET  /swagger (Development only)",
         "background: password rotation (settings: ApiSettings table, credentials: ApiCredentialLogs table)",
     },
@@ -103,5 +105,6 @@ app.MapGet("/", () => Results.Ok(new
 .WithTags("Health");
 
 app.MapRegistryAuthEndpoints();
+app.MapDeployEndpoints();
 
 app.Run();

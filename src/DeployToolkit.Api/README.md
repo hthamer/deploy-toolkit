@@ -8,6 +8,9 @@ settings file.
 
 Phase 1 scope: **username/password authentication — token-free by design**
 plus a **background service that rotates the passwords every 45 minutes**.
+Phase 2 scope: **`POST /api/deploy`** — the Deployer reports a finished
+deployment and the API flags the package as Deployed in the registry using
+the same "Mark Deployed" semantics the Packager/orchestrator use.
 
 **Everything credential- and rotation-related lives in the DATABASE** —
 never in appsettings.json or any other configuration file:
@@ -20,20 +23,24 @@ never in appsettings.json or any other configuration file:
 
 ```
 POST {baseUrl}/api/auth/authenticate
+POST {baseUrl}/api/deploy          (HTTP Basic credentials + deploy report)
 ```
 
-The route and payload contract are pinned by the WinForms clients:
+The route and payload contracts are pinned by the WinForms clients:
 `RegistryApiClient` (DeployToolkit.AppKit) POSTs camelCase
-`{"username": …, "password": …}` to `{baseUrl}/api/auth/authenticate`,
-treats HTTP 2xx as "Login OK" (the Deployer's *Registry connection* dialog
-shows the response body as its green status text) and surfaces any other
-status code plus the response body as the failure detail.
+`{"username": …, "password": …}` to `{baseUrl}/api/auth/authenticate`
+(HTTP 2xx = "Login OK"; the Deployer's *Registry connection* dialog shows
+the response body as its green status text) and the camelCase
+`ApiDeploymentReport` to `{baseUrl}/api/deploy` after every deployment,
+with the session credentials in the HTTP Basic header. Any non-2xx status
+code plus the response body is surfaced as the failure detail.
 
 ## Endpoints
 
 | Method | Route                    | Auth | Purpose |
 |--------|--------------------------|------|---------|
 | POST   | `/api/auth/authenticate` | none | Validates the username/password pair against `ApiUsers` in the registry DB. **200** → `{status, message, username, displayName, passwordChangedUtc, passwordRotatesAtUtc}` · **400** → missing fields · **401** → unknown user / wrong password / disabled account (one generic message — no user enumeration) · **429** → per-IP rate limit. |
+| POST   | `/api/deploy` | HTTP Basic | Registers the Deployer's finished deployment. **200** → `{status, message, packageId, packageStatus, runId, result, deployedUtc, authenticatedAs}` · **400** → missing `packageId` / invalid `result` · **401** → missing/invalid credentials (`WWW-Authenticate: Basic` challenge included) · **404** → unknown `packageId` · **429** → per-IP rate limit. |
 | GET    | `/`                      | none | Health/identity probe. |
 | *      | `/swagger`               | Development only | Swagger UI for interactive testing. |
 
@@ -121,6 +128,49 @@ API users' password with a fresh crypto-random one on a schedule:
 | `Auth.Rotation.NextRunUtc` | *(service-written)* | Next due rotation; missing/past = due now. |
 
 Unknown keys are ignored — other components may store their own rows.
+
+## Deploy endpoint (the Deployer flags the package as deployed)
+
+`POST /api/deploy` receives the report the Deployer sends after finishing a
+deployment and applies the SAME "Mark Deployed" semantics the local
+orchestrator/Packager path uses (`EfCoreRegistryStore.MarkDeployedAsync` +
+run recording):
+
+* **Authentication** — HTTP Basic with the session's registry
+  username/password (the same pair the Login button verified). Token-free,
+  per-request; missing header → **401** with a
+  `WWW-Authenticate: Basic` challenge; wrong/disabled credentials →
+  **401** with the same generic messages as the login endpoint. Each report
+  burns a PBKDF2 verify, so the endpoint sits behind the same per-IP rate
+  limiter as `/api/auth/*`.
+* **Payload** — the camelCase `ApiDeploymentReport` the
+  `RegistryApiClient` already sent before this endpoint existed
+  (`packageId, client, component, version, result, healthCheckPassed,
+  message, deployedBy, startedUtc, completedUtc, targetType`).
+* **Success (`result = "Success"`)** → package `Status = Deployed`,
+  `DeployedBy` (from the report, falling back to the authenticated user)
+  and `DeployedUtc` (from `completedUtc`) are stamped — exactly what the
+  orchestrator does after a green health check. "Latest deployed baseline"
+  and "stale packages" queries in the Packager immediately see it.
+* **Failed / RolledBack** → the package status is left UNTOUCHED (a
+  rolled-back run never shipped), but the outcome is still audited.
+* **Every accepted report** writes a `DeploymentRunRecord` with the same
+  fields `RecordRunStartAsync` / `RecordRunCompleteAsync` write locally
+  (`RunId`, `PackageId`, `StartedUtc`, `CompletedUtc`, `Result`,
+  `HealthCheckResult`). The live log file stays on the Deployer machine.
+* **Response 200** → `{status, message, packageId, packageStatus, runId,
+  result, deployedUtc, authenticatedAs}` — the Deployer's log pane prints
+  `Central API accepted the deploy report: …` with this body.
+* **Client side** — `RegistryApiClient.ReportDeploymentAsync(baseUrl,
+  report, username, password)` sets the Basic header;
+  `StageDeploy` passes `Shell.ConnectionSettings.ApiUsername/ApiPassword`
+  (session-only, never persisted). Without session credentials the report
+  is skipped with a WARN line telling the user to log in via the Registry
+  connection dialog.
+* **Rotation interplay** — credentials rotate every 45 minutes
+  (see below); a report sent with a password that has since been rotated
+  returns 401 with the API's message, and the Deployer logs it at ERROR
+  without failing the deployment itself.
 
 ## Security model
 
@@ -210,7 +260,7 @@ IIS/reverse proxy, terminate TLS there and keep the API on plain HTTP
 internally — the Deployer's `ApiBaseUrl` should then be the `https://…`
 front door.
 
-## Creating additional users (until phase 2 adds management endpoints)
+## Creating additional users (until management endpoints exist)
 
 Insert a row into `ApiUsers` with any placeholder hash and `IsActive = 1` —
 the rotation service picks the user up on its next cycle, replaces the
@@ -219,13 +269,11 @@ password with a generated one, and registers the real credential in
 username to `Auth.Rotation.Usernames`… the allow-list works the other way:
 when non-empty, ONLY the listed usernames are rotated.
 
-## What phase 2+ is expected to add
+## What phase 3+ is expected to add
 
-* `POST /api/deploy` — receives the Deployer's `ApiDeploymentReport`
-  (camelCase, already defined in `RegistryApiClient`), authenticated by the
-  same username/password pair (sent per request — e.g. HTTP Basic or a
-  small credential header — matching the token-free phase-1 model), and
-  writes a `DeploymentRunRecord`.
+* Deployment history/log retrieval endpoints (e.g. GET /api/runs for a
+  component) and package-store lookup by client/component, so the Deployer
+  can pick packages over the API without direct DB access.
 * User management endpoints (create / disable / trigger an out-of-band
   rotation — writing to the same `ApiUsers` + `ApiCredentialLogs` tables).
 * If the 45-minute rotation ever collides with real-world deployment

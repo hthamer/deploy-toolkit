@@ -365,9 +365,15 @@ internal sealed class StageDeploy : StagePanel
     /// <summary>
     /// Reports the completed deployment to the central API's deploy endpoint
     /// (POST {url}/api/deploy) using the base URL saved in the registry
-    /// connection settings. Best-effort: failures are logged at ERROR level
-    /// but never fail the run — the registry store already recorded the
-    /// outcome locally. Skipped with an info line when no API URL is saved.
+    /// connection settings. Authentication is the session's registry
+    /// username/password (HTTP Basic — the API is token-free; the same pair
+    /// the Login button verified against /api/auth/authenticate). A
+    /// successful report flags the package as Deployed in the central
+    /// registry. Best-effort: failures are logged at ERROR level but never
+    /// fail the run — the registry store already recorded the outcome
+    /// locally. Skipped with an info line when no API URL is saved, and with
+    /// a warning when the session credentials are missing (the user logged
+    /// out of the Registry connection dialog).
     /// </summary>
     private async Task ReportDeployToApiAsync(
         DeploymentContext context, RunLogger logger, string packageId, DateTimeOffset startedUtc, RunOutcome outcome)
@@ -376,6 +382,17 @@ internal sealed class StageDeploy : StagePanel
         if (string.IsNullOrWhiteSpace(baseUrl))
         {
             logger.Info("No central API URL configured — deploy report to the API skipped.");
+            return;
+        }
+
+        var apiUsername = Shell.ConnectionSettings.ApiUsername;
+        var apiPassword = Shell.ConnectionSettings.ApiPassword;
+        if (string.IsNullOrWhiteSpace(apiUsername) || string.IsNullOrWhiteSpace(apiPassword))
+        {
+            logger.Warn(
+                "Central API credentials are not available for this session — " +
+                "open the Registry connection dialog and log in, then re-run. " +
+                "Deploy report to the API skipped (the package is NOT flagged as Deployed in the central registry).");
             return;
         }
 
@@ -394,7 +411,8 @@ internal sealed class StageDeploy : StagePanel
             context.TargetType?.ToString() ?? "Unknown");
 
         logger.Info($"Reporting deployment to the central API ({baseUrl})...");
-        var (success, detail) = await RegistryApiClient.ReportDeploymentAsync(baseUrl, report)
+        var (success, detail) = await RegistryApiClient
+            .ReportDeploymentAsync(baseUrl, report, apiUsername, apiPassword)
             .ConfigureAwait(false);
 
         if (success)
