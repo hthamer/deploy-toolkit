@@ -11,6 +11,9 @@
     <Compile Update="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Update="RegistryApiConnectionDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Update="RegistryPackagePickerDialog.cs">
       <SubType>Form</SubType>
     </Compile>

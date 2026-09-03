@@ -1,8 +1,6 @@
 using DeployToolkit.AppKit;
 using DeployToolkit.Core.Backup;
-using Microsoft.SqlServer.Management.Common;
-using Microsoft.SqlServer.Management.Smo;
-using Microsoft.SqlServer.Management.Sdk.Sfc;
+using DeployToolkit.Core.Database;
 
 namespace DeployToolkit.Deployer.Stages;
 
@@ -102,9 +100,7 @@ internal sealed class StageBackup : StagePanel
             sb.AppendLine("Generating database script backup (SMO)…");
             try
             {
-                var dbName = ExtractDatabaseName(dbConn) ?? "database";
-                var scriptPath = Path.Combine(backupFolder, $"{dbName}-backup.sql");
-                GenerateDatabaseScriptSMO(dbConn, dbName, scriptPath);
+                var scriptPath = SmoDatabaseScriptBackup.WriteScriptBackup(dbConn, backupFolder);
                 var sizeMB = new FileInfo(scriptPath).Length / (1024.0 * 1024);
                 sb.AppendLine($"Database script backup completed: {scriptPath} ({sizeMB:F1} MB)");
             }
@@ -122,66 +118,5 @@ internal sealed class StageBackup : StagePanel
         _resultBox.Text = sb.ToString();
         Shell.AppendLog($"Pre-flight backup written to {backupFolder}.");
         return Task.CompletedTask;
-    }
-
-    /// <summary>Generates a full database script via SMO (same engine SSMS uses
-    /// for "Generate Scripts"). Writes schema + data + triggers + SPs +
-    /// indexes + constraints + FKs + views + UDFs directly to file.</summary>
-    private static void GenerateDatabaseScriptSMO(string connectionString, string dbName, string outputFilePath)
-    {
-        using var sqlConn = new Microsoft.Data.SqlClient.SqlConnection(connectionString);
-        sqlConn.Open();
-
-        var serverConnection = new ServerConnection(sqlConn);
-        var server = new Server(serverConnection);
-        var database = server.Databases[dbName];
-
-        if (database is null)
-            throw new InvalidOperationException($"Database '{dbName}' not found on the server.");
-
-        var scripter = new Scripter(server);
-        scripter.Options = new ScriptingOptions
-        {
-            ScriptSchema = true,
-            ScriptData = true,
-            ScriptDrops = false,
-            WithDependencies = true,
-            Indexes = true,
-            DriAllConstraints = true,
-            Triggers = true,
-            FileName = outputFilePath,
-            ToFileOnly = true,
-            EnforceScriptingOptions = true,
-            ScriptBatchTerminator = true,
-            AnsiFile = true,
-            IncludeDatabaseContext = false,
-        };
-
-        var urns = new List<Urn>();
-        foreach (Table table in database.Tables)
-            if (!table.IsSystemObject) urns.Add(table.Urn);
-        foreach (View view in database.Views)
-            if (!view.IsSystemObject) urns.Add(view.Urn);
-        foreach (StoredProcedure sp in database.StoredProcedures)
-            if (!sp.IsSystemObject) urns.Add(sp.Urn);
-        foreach (UserDefinedFunction udf in database.UserDefinedFunctions)
-            if (!udf.IsSystemObject) urns.Add(udf.Urn);
-
-        scripter.Script(urns.ToArray());
-        serverConnection.Disconnect();
-    }
-
-    private static string? ExtractDatabaseName(string connectionString)
-    {
-        foreach (var part in connectionString.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var sep = part.IndexOf('=');
-            if (sep <= 0) continue;
-            var key = part[..sep].Trim();
-            var value = part[(sep + 1)..].Trim();
-            if (key.Equals("Initial Catalog", StringComparison.OrdinalIgnoreCase) || key.Equals("Database", StringComparison.OrdinalIgnoreCase))
-                return value;
-        }
-        return null;
     }
 }

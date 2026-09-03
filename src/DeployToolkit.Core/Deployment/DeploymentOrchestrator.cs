@@ -18,6 +18,7 @@ namespace DeployToolkit.Core.Deployment;
 /// </summary>
 public sealed record DeploymentHooks(
     Func<Task>? StopSite = null,
+    Func<string, Task>? DatabaseBackup = null,
     Func<Task>? StartSite = null,
     Func<string, IReadOnlyList<DbScriptRef>, Task>? RunDbScripts = null,
     Func<string, Task<bool>>? HealthCheck = null);
@@ -39,10 +40,11 @@ public sealed record DeploymentRunResult(
     IReadOnlyList<string> Log);
 
 /// <summary>
-/// The generic deploy flow: verify package integrity -> backup -> stop ->
-/// extract files -> merge appsettings -> run DB scripts -> start -> health
-/// check -> record result, rolling back automatically if anything past the
-/// backup step fails or the health check doesn't pass.
+/// The generic deploy flow: verify package integrity -> backup (file backup,
+/// then the database script backup hook — both before anything is touched) ->
+/// stop -> extract files -> merge appsettings -> run DB scripts -> start ->
+/// health check -> record result, rolling back automatically if anything
+/// past the backup step fails or the health check doesn't pass.
 /// </summary>
 public sealed class DeploymentOrchestrator
 {
@@ -103,6 +105,17 @@ public sealed class DeploymentOrchestrator
 
         try
         {
+            // Database script backup runs here, inside the backup step, so a
+            // failure aborts the run BEFORE the site is stopped or any file
+            // is deployed. The pre-deploy DB state is also captured — not the
+            // post-migration state the DB scripts step would leave behind.
+            if (hooks.DatabaseBackup is not null)
+            {
+                Log("Generating database script backup (SMO)...");
+                await hooks.DatabaseBackup(backupFolder);
+                Log("Database script backup completed.");
+            }
+
             if (hooks.StopSite is not null)
             {
                 Log("Stopping site...");

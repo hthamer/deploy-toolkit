@@ -8,7 +8,13 @@
     <Compile Update="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Update="MigrationScriptDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Update="PackagerWizardForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="PrecompileOptionsDialog.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Update="ReconcileDialog.cs">

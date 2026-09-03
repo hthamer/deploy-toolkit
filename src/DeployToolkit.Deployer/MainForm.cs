@@ -107,6 +107,11 @@ public sealed class MainForm : Form
     /// <summary>The open registry store; null until a connection succeeds.</summary>
     internal IRegistryStore? Store => _store;
 
+    /// <summary>The connection settings currently in effect — carries the
+    /// central API base URL (persisted) plus any session-only API credentials
+    /// entered in the connection dialog.</summary>
+    internal RegistryConnectionSettings ConnectionSettings => _settings;
+
     /// <summary>The package being deployed; null until step 1 succeeds.</summary>
     internal DeploymentContext? Context => _context;
 
@@ -512,7 +517,7 @@ public sealed class MainForm : Form
             // First-run / unreachable registry: offer the connection dialog
             // right away, but the main window still opens (possibly disabled)
             // when the user cancels — startup must never fail.
-            using var dialog = new ConnectionDialog(_settings);
+            using var dialog = new RegistryApiConnectionDialog(_settings);
             if (dialog.ShowDialog(this) == DialogResult.OK && dialog.ResultSettings is { } chosen)
             {
                 _settings = chosen;
@@ -531,7 +536,7 @@ public sealed class MainForm : Form
         // it can never outlive used to brick the shell ("Reconnecting…"
         // floating disabled on top of the connection form). Only the actual
         // reconnect below is busy-guarded.
-        using var dialog = new ConnectionDialog(_settings);
+        using var dialog = new RegistryApiConnectionDialog(_settings);
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.ResultSettings is not { } chosen)
             return; // cancelled — keep the current connection as-is
 

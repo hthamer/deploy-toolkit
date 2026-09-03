@@ -188,6 +188,12 @@ internal sealed class StageDeploy : StagePanel
             RenderResult(outcome);
             logger.Info($"Run finished with result {outcome.Result}.");
 
+            // outcome.Success is exactly when the run marked the package
+            // Deployed (orchestrator path and executor paths alike) — report
+            // that to the central API's deploy endpoint.
+            if (outcome.Success)
+                await ReportDeployToApiAsync(context, logger, packageId, startedUtc, outcome);
+
             if (outcome.Success)
                 Shell.OnRunSucceeded();
             else
@@ -259,6 +265,11 @@ internal sealed class StageDeploy : StagePanel
                         connectionString,
                         new SqlScriptRunnerOptions(),
                         new Progress<string>(logger.Info)),
+                    // Q8: runs during the orchestrator's backup step (before
+                    // stop/deploy) so the pre-deploy DB state is captured and
+                    // a scripting failure aborts the run before any change.
+                    DatabaseBackup = folder => GenerateDatabaseBackupAsync(
+                        connectionString, folder, logger),
                 };
                 logger.Info($"DB scripts enabled — {manifest.DbScripts.Count} script(s) will run (read straight from the package zip).");
             }
@@ -287,31 +298,6 @@ internal sealed class StageDeploy : StagePanel
         // thread so the log pane and the window stay responsive throughout
         // the deploy (user-reported freeze class).
         var result = await Task.Run(() => orchestrator.RunAsync(request, packageId));
-
-        // Q8: after the orchestrator backs up the website files, generate a
-        // full database script backup (schema + data + triggers + SPs +
-        // indexes + constraints + FKs) alongside the file backup when:
-        //  - the manifest has DB scripts, AND
-        //  - a DB connection string was provided, AND
-        //  - the orchestrator created a backup folder.
-        // Uses SQL Server's scripting (sys.objects + sp_helptext) instead of
-        // BACKUP DATABASE (.bak) because AWS RDS and other managed SQL
-        // services don't support BACKUP DATABASE TO DISK.
-        if (manifest.DbScripts.Count > 0 && context.DbConnectionString is { } dbConn
-            && !string.IsNullOrEmpty(result.BackupFolder))
-        {
-            try
-            {
-                await GenerateDatabaseBackupAsync(dbConn, result.BackupFolder, logger);
-            }
-            catch (Exception dbEx)
-            {
-                logger.Error($"Database backup failed: {dbEx.Message}");
-                // Non-fatal — the file backup succeeded and the DB scripts
-                // themselves are the safety net. The error is logged at ERROR
-                // level (not WARN) so the user sees it clearly.
-            }
-        }
 
         return new RunOutcome(
             result.Success,
@@ -357,100 +343,64 @@ internal sealed class StageDeploy : StagePanel
     }
 
     /// <summary>
-    /// Q8: generates a full database script (schema + data + triggers +
+    /// Q8: generates a full database script backup (schema + data + triggers +
     /// stored procedures + indexes + constraints + foreign keys + views +
-    /// user-defined functions) and saves it as a .sql file alongside the
-    /// file backup folder.
-    ///
-    /// Uses Microsoft.SqlServer.Management.Smo (SMO) — the same engine SSMS
-    /// uses for "Generate Scripts" — for full fidelity across SQL Server
-    /// 2016 through 2022+. Works on AWS RDS (no BACKUP DATABASE TO DISK).
-    /// Best-effort: a failure is logged at ERROR level but doesn't fail
-    /// the deploy.
+    /// user-defined functions) as a .sql file alongside the file backup folder,
+    /// via <see cref="SmoDatabaseScriptBackup"/> — the same engine SSMS uses
+    /// for "Generate Scripts". Works on AWS RDS (no BACKUP DATABASE TO DISK).
     /// </summary>
     private static async Task GenerateDatabaseBackupAsync(
         string connectionString, string backupFolder, RunLogger logger)
     {
-        var dbName = ExtractDatabaseName(connectionString) ?? "database";
-        var scriptPath = Path.Combine(backupFolder, $"{dbName}-backup.sql");
-        logger.Info($"Generating database script backup (SMO): {scriptPath}");
+        var dbName = SmoDatabaseScriptBackup.ExtractDatabaseName(connectionString) ?? "database";
+        logger.Info($"Generating database script backup (SMO) for {dbName}…");
 
-        await Task.Run(() =>
-        {
-            // SMO connects via the existing SqlConnection (already has the
-            // credentials + server resolved). ServerConnection wraps it.
-            using var sqlConn = new Microsoft.Data.SqlClient.SqlConnection(connectionString);
-            sqlConn.Open();
-
-            var serverConnection = new Microsoft.SqlServer.Management.Common.ServerConnection(sqlConn);
-            var server = new Microsoft.SqlServer.Management.Smo.Server(serverConnection);
-            var database = server.Databases[dbName];
-
-            if (database is null)
-                throw new InvalidOperationException($"Database '{dbName}' not found on the server.");
-
-            var scripter = new Microsoft.SqlServer.Management.Smo.Scripter(server);
-            scripter.Options = new Microsoft.SqlServer.Management.Smo.ScriptingOptions
-            {
-                ScriptSchema = true,             // Script object definitions (CREATE TABLE, etc.)
-                ScriptData = true,               // Include INSERT statements for all table data
-                ScriptDrops = false,             // Do not write DROP statements (clean restore)
-                WithDependencies = true,         // Automatically order scripts by FK/dependency
-                Indexes = true,                  // Include table indexes
-                DriAllConstraints = true,        // Include Foreign Keys, Primary Keys, Check/Default constraints
-                Triggers = true,                 // Include triggers
-                FileName = scriptPath,            // Output file destination
-                ToFileOnly = true,               // Stream output directly to the file (no in-memory)
-                EnforceScriptingOptions = true,   // Apply settings down to child objects
-                ScriptBatchTerminator = true,     // Include GO batch separators
-                AnsiFile = true,                  // Use ANSI file encoding
-                IncludeDatabaseContext = false,   // Don't prepend USE [db] (we're already connected)
-            };
-
-            // Gather non-system database objects in dependency order.
-            var urns = new List<Microsoft.SqlServer.Management.Sdk.Sfc.Urn>();
-
-            foreach (Microsoft.SqlServer.Management.Smo.Table table in database.Tables)
-                if (!table.IsSystemObject) urns.Add(table.Urn);
-
-            foreach (Microsoft.SqlServer.Management.Smo.View view in database.Views)
-                if (!view.IsSystemObject) urns.Add(view.Urn);
-
-            foreach (Microsoft.SqlServer.Management.Smo.StoredProcedure sp in database.StoredProcedures)
-                if (!sp.IsSystemObject) urns.Add(sp.Urn);
-
-            foreach (Microsoft.SqlServer.Management.Smo.UserDefinedFunction udf in database.UserDefinedFunctions)
-                if (!udf.IsSystemObject) urns.Add(udf.Urn);
-
-            // Generate the full script directly to file.
-            scripter.Script(urns.ToArray());
-
-            // SMO's Script() with ToFileOnly writes to the file; close the
-            // server connection explicitly.
-            serverConnection.Disconnect();
-        });
+        var scriptPath = await Task.Run(
+            () => SmoDatabaseScriptBackup.WriteScriptBackup(connectionString, backupFolder));
 
         var sizeMB = new FileInfo(scriptPath).Length / (1024.0 * 1024);
         logger.Info($"Database script backup completed: {scriptPath} ({sizeMB:F1} MB)");
     }
 
-    /// <summary>Extracts the Initial Catalog / Database value from a SQL
-    /// connection string. Returns null when not found (the caller falls back
-    /// to "database").</summary>
-    private static string? ExtractDatabaseName(string connectionString)
+    /// <summary>
+    /// Reports the completed deployment to the central API's deploy endpoint
+    /// (POST {url}/api/deploy) using the base URL saved in the registry
+    /// connection settings. Best-effort: failures are logged at ERROR level
+    /// but never fail the run — the registry store already recorded the
+    /// outcome locally. Skipped with an info line when no API URL is saved.
+    /// </summary>
+    private async Task ReportDeployToApiAsync(
+        DeploymentContext context, RunLogger logger, string packageId, DateTimeOffset startedUtc, RunOutcome outcome)
     {
-        foreach (var part in connectionString.Split(';',
-                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        var baseUrl = Shell.ConnectionSettings.ApiBaseUrl;
+        if (string.IsNullOrWhiteSpace(baseUrl))
         {
-            var sep = part.IndexOf('=');
-            if (sep <= 0) continue;
-            var key = part[..sep].Trim();
-            var value = part[(sep + 1)..].Trim();
-            if (key.Equals("Initial Catalog", StringComparison.OrdinalIgnoreCase)
-                || key.Equals("Database", StringComparison.OrdinalIgnoreCase))
-                return value;
+            logger.Info("No central API URL configured — deploy report to the API skipped.");
+            return;
         }
-        return null;
+
+        var manifest = context.Manifest;
+        var report = new ApiDeploymentReport(
+            packageId,
+            manifest.Client,
+            manifest.Component,
+            manifest.Version,
+            outcome.Result,
+            outcome.HealthCheckPassed,
+            outcome.Message,
+            Environment.UserName,
+            startedUtc,
+            DateTimeOffset.UtcNow,
+            context.TargetType?.ToString() ?? "Unknown");
+
+        logger.Info($"Reporting deployment to the central API ({baseUrl})...");
+        var (success, detail) = await RegistryApiClient.ReportDeploymentAsync(baseUrl, report)
+            .ConfigureAwait(false);
+
+        if (success)
+            logger.Info($"Central API accepted the deploy report: {detail}");
+        else
+            logger.Error($"Central API deploy report FAILED: {detail}");
     }
 
     // ---------------------------------------------------------------
@@ -745,7 +695,7 @@ internal sealed class StageDeploy : StagePanel
                         $"{manifest.AppSettingsDelta.Count} delta key(s), {manifest.DbScripts.Count} DB script(s), " +
                         $"health: {(string.IsNullOrWhiteSpace(manifest.HealthCheckUrl) ? "none" : manifest.HealthCheckUrl)}");
         plan.AppendLine(context.TargetType == TargetType.IisLocal
-            ? "Flow:        verify → backup → stop → deploy → merge → DB → start → health (auto-rollback on failure)."
+            ? "Flow:        verify → backup (files + DB script) → stop → deploy → merge → DB → start → health (auto-rollback on failure)."
             : "Flow:        verify → extract → upload (executor) → health — no local stop/backup; recording replicated.");
 
         _planBox.Text = plan.ToString();

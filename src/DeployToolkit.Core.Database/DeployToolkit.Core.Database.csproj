@@ -23,6 +23,9 @@
          execution happen in-process; sqlcmd.exe is never spawned (plan §1
          policy: no scripts or external tools on target machines). -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
+    <!-- SMO for the full database script backup (SmoDatabaseScriptBackup) —
+         the same engine SSMS "Generate Scripts" uses. -->
+    <PackageReference Include="Microsoft.SqlServer.SqlManagementObjects" Version="181.36.0" />
   </ItemGroup>
 
 </Project>

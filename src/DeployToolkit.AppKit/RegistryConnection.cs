@@ -39,6 +39,25 @@ public sealed class RegistryConnectionSettings
     /// <summary>SQL Server / Azure SQL connection string (SQL Server mode only).</summary>
     public string? ConnectionString { get; set; }
 
+    /// <summary>
+    /// Base URL of the central registry REST API (e.g.
+    /// <c>https://registry.example.com</c>). This is the ONLY API detail
+    /// persisted — see <see cref="ApiUsername"/>/<see cref="ApiPassword"/>.
+    /// </summary>
+    public string? ApiBaseUrl { get; set; }
+
+    /// <summary>API login username. Session-only: deliberately excluded from
+    /// serialization ([JsonIgnore]) so credentials never reach the settings
+    /// file on disk — the user must re-enter them each session.</summary>
+    [JsonIgnore]
+    public string? ApiUsername { get; set; }
+
+    /// <summary>API login password. Session-only: deliberately excluded from
+    /// serialization ([JsonIgnore]) so credentials never reach the settings
+    /// file on disk — the user must re-enter them each session.</summary>
+    [JsonIgnore]
+    public string? ApiPassword { get; set; }
+
     /// <summary>Root folder holding the offline registry files (LocalFile mode only).</summary>
     public string? LocalRoot { get; set; }
 

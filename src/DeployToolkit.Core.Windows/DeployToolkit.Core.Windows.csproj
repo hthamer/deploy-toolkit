@@ -34,7 +34,7 @@
          the secret protector (plan §11/§12: secrets never in plain text).
          Throws PlatformNotSupportedException on non-Windows at runtime —
          the cross-platform AES-GCM protector in Core is the default. -->
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.4" />
   </ItemGroup>
 
 </Project>
