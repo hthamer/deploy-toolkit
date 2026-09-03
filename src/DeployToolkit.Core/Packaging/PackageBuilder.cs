@@ -209,8 +209,17 @@ public sealed class PackageBuilder
             .Where(p => !IsExcluded(p, excludedPaths) && !SensitiveFileFilter.IsSensitiveOrAppSettingsVariant(p))
             .ToList();
 
+        // The package id is generated HERE — before the zip is written — so
+        // it can be embedded in the manifest.json inside the package. The
+        // registry row is then created with the SAME id. This closes the
+        // traceability gap that made the Deployer report a PackageId the
+        // registry never heard of (the manifest carried no id, so the
+        // Deployer had to guess by version+hash or invent one offline).
+        var packageId = Guid.NewGuid().ToString("N");
+
         var manifest = new ComponentManifest
         {
+            PackageId = packageId,
             ComponentId = request.ComponentId,
             Client = client.Name,
             Component = component.Name,
@@ -279,7 +288,10 @@ public sealed class PackageBuilder
         // for local-only, on the share for shared).
         packageLocation ??= request.OutputZipPath;
 
-        var record = await _registry.CreatePackageAsync(request.ComponentId, manifest, packageLocation);
+        // The pinned id keeps the row consistent with the manifest.json
+        // already inside the .zip written above.
+        var record = await _registry.CreatePackageAsync(
+            request.ComponentId, manifest, packageLocation, packageId);
 
         var buildResult = new PackageBuildResult(manifest, request.OutputZipPath, record, stalePackages);
         if (packageStoreError is not null)

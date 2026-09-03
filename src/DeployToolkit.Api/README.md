@@ -147,6 +147,19 @@ run recording):
   `RegistryApiClient` already sent before this endpoint existed
   (`packageId, client, component, version, result, healthCheckPassed,
   message, deployedBy, startedUtc, completedUtc, targetType`).
+* **PackageId traceability (user-requested fix)** — the PackageId reported
+  here MUST be the one embedded in the package's own `manifest.json`
+  (`"PackageId"` key). The Packager now generates the id BEFORE writing the
+  zip (`PackageBuilder.BuildAsync`), stamps it into the manifest, and
+  creates the registry row with the SAME id — zip, row and report always
+  agree. The Deployer matches the loaded zip by that manifest id first
+  (`StageLoadPackage`), refuses to guess when a manifest id is not in the
+  connected registry (that meant the wrong registry), and reuses the
+  manifest id for offline catch-up records. Previously the manifest carried
+  NO id, so the Deployer guessed by version+hash or invented one offline —
+  reports then 404'd with a PackageId the registry had never heard of.
+  The lookup itself accepts any textual GUID format (N/D/B/P/X) — ids are
+  normalized before the query.
 * **Success (`result = "Success"`)** → package `Status = Deployed`,
   `DeployedBy` (from the report, falling back to the authenticated user)
   and `DeployedUtc` (from `completedUtc`) are stamped — exactly what the

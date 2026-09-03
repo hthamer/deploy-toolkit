@@ -176,16 +176,36 @@ internal sealed class StageLoadPackage : StagePanel
 
         var manifest = PackageReader.ReadManifest(zipPath);
         var component = await store.GetComponentAsync(manifest.ComponentId);
-        var package = await MatchPackageAsync(store, manifest);
+        var (package, matchedBy) = await MatchPackageAsync(store, manifest);
 
         // No offline registry / "Record as new" — user said no need for it.
         if (package is null)
         {
-            // In offline mode (local file store), auto-create the record.
+            // In offline mode (local file store), auto-create the record —
+            // reusing the manifest's PackageId when the zip carries one, so
+            // the deploy report flags THE row the Packager created in the
+            // central registry (the local store just can't see it).
             if (Shell.OfflineMode)
             {
-                package = await store.CreatePackageAsync(manifest.ComponentId, manifest);
+                package = await store.CreatePackageAsync(
+                    manifest.ComponentId, manifest, packageId: manifest.PackageId);
                 Shell.AppendLog($"No matching row — recorded as new package {package.PackageId}.");
+                matchedBy = manifest.PackageId is null ? "new record (no id in manifest)" : "manifest PackageId (new local record)";
+            }
+            else if (manifest.PackageId is not null)
+            {
+                // The zip carries an explicit PackageId that is NOT in the
+                // connected registry. Guessing by version+hash could flag the
+                // WRONG row as Deployed — refuse with an actionable message
+                // instead (wrong registry connection, or a package built by an
+                // older Packager against a different registry).
+                _messageLabel.ForeColor = Color.Firebrick;
+                _messageLabel.Text =
+                    $"Package '{manifest.PackageId}' (from the package manifest) was not found in the " +
+                    $"connected registry (component '{manifest.ComponentId}', v{manifest.Version}).\n" +
+                    "The deploy report would flag the wrong row — check the registry connection " +
+                    "(the package was probably built against a different registry).";
+                return;
             }
             else
             {
@@ -193,6 +213,18 @@ internal sealed class StageLoadPackage : StagePanel
                 _messageLabel.Text = $"Package not found in registry (v{manifest.Version}).";
                 return;
             }
+        }
+        else if (manifest.PackageId is not null &&
+                 !string.Equals(package.PackageId, manifest.PackageId, StringComparison.OrdinalIgnoreCase))
+        {
+            // Defensive: the registry returned a row whose id differs from the
+            // manifest's. Report the MANIFEST's id (that is the id the Packager
+            // registered for this exact zip) — never the heuristic match.
+            Shell.AppendLog(
+                $"WARNING: registry matched package {package.PackageId} but the manifest carries {manifest.PackageId} — " +
+                "using the manifest's PackageId for the deploy report.");
+            package = package.WithPackageId(manifest.PackageId);
+            matchedBy = "manifest PackageId (override)";
         }
 
         Shell.SetContext(new DeploymentContext
@@ -207,7 +239,7 @@ internal sealed class StageLoadPackage : StagePanel
         PopulateTabs(manifest);
 
         Shell.ClearLog();
-        Shell.AppendLog($"Package loaded: {manifest.Component} v{manifest.Version} ({package.PackageId}, {package.Status}).");
+        Shell.AppendLog($"Package loaded: {manifest.Component} v{manifest.Version} ({package.PackageId}, {package.Status}; matched by {matchedBy}).");
         Shell.OnPackageLoaded();
     }
 
@@ -221,11 +253,26 @@ internal sealed class StageLoadPackage : StagePanel
         }
     }
 
-    private static async Task<PackageRecord?> MatchPackageAsync(IRegistryStore store, ComponentManifest manifest)
+    /// <summary>
+    /// Finds the registry row for the loaded zip. When the manifest carries an
+    /// explicit PackageId (all packages built by the current Packager), that id
+    /// is looked up EXACTLY — no guessing. The version+first-file-hash
+    /// heuristic remains only for legacy manifests without an id (matchedBy
+    /// reports which path won, so the log always shows how the row was chosen).
+    /// </summary>
+    private static async Task<(PackageRecord? Package, string MatchedBy)> MatchPackageAsync(IRegistryStore store, ComponentManifest manifest)
     {
+        if (manifest.PackageId is not null)
+        {
+            var byId = await store.GetPackageAsync(manifest.PackageId);
+            if (byId is not null)
+                return (byId, "manifest PackageId (exact)");
+            return (null, "manifest PackageId (not found)");
+        }
+
         var candidates = (await store.GetPackagesForComponentAsync(manifest.ComponentId))
             .Where(p => string.Equals(p.Version, manifest.Version, StringComparison.OrdinalIgnoreCase)).ToList();
-        if (candidates.Count == 0) return null;
+        if (candidates.Count == 0) return (null, "version+hash (no candidates)");
         var firstHash = manifest.Files.Count > 0 ? manifest.Files[0].Hash : null;
         foreach (var c in candidates)
         {
@@ -234,21 +281,26 @@ internal sealed class StageLoadPackage : StagePanel
                 var stored = ManifestSerializer.Deserialize(c.ManifestJson);
                 var storedHash = stored.Files.Count > 0 ? stored.Files[0].Hash : null;
                 if (storedHash is not null && string.Equals(storedHash, firstHash, StringComparison.OrdinalIgnoreCase))
-                    return c;
+                    return (c, "version+first-file-hash");
             }
             catch { }
         }
-        if (candidates.Count == 1) return candidates[0];
-        return candidates.OrderBy(c => Math.Abs((c.CreatedUtc - manifest.CreatedUtc).Ticks)).First();
+        if (candidates.Count == 1) return (candidates[0], "version (single candidate)");
+        return (candidates.OrderBy(c => Math.Abs((c.CreatedUtc - manifest.CreatedUtc).Ticks)).First(), "version+created-date (closest)");
     }
 
     /// <summary>Package Info summary — NO sensitive info (no git SHA, no
-    /// component ID, no registry details, no health URL). User: "don't print
-    /// any sensitive information like git info, or component info."</summary>
+    /// registry details, no health URL). User: "don't print any sensitive
+    /// information like git info, or component info." The registry PackageId
+    /// IS shown — operators validate the deploy report against the database
+    /// with it (user request: "make sure that the PackageId exists in the
+    /// manifest.json in the created package").</summary>
     private static string BuildSummary(ComponentManifest m)
     {
         var s = new StringBuilder();
         s.AppendLine($"Version:    {m.Version}");
+        if (m.PackageId is not null)
+            s.AppendLine($"Package Id: {m.PackageId}");
         s.AppendLine($"Created:    {m.CreatedUtc:yyyy-MM-dd HH:mm:ss}");
         s.AppendLine($"Framework:  {m.TargetFramework}{(m.IsSelfContained ? ", self-contained" : ", framework-dependent")}");
         s.AppendLine($"Files:      {m.Files.Count} changed/new ({FormatBytes(m.Files.Sum(f => f.SizeBytes))})");

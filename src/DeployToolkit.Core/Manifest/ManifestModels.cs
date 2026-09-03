@@ -37,6 +37,18 @@ public enum PackageStatus
 /// </summary>
 public sealed class ComponentManifest
 {
+    /// <summary>
+    /// The registry package row this manifest belongs to
+    /// (<c>Packages.PackageId</c> — N-format GUID). Written into
+    /// manifest.json by the Packager (the row's ID is generated BEFORE the
+    /// zip is written, precisely so it can be embedded) and read back by the
+    /// Deployer, so the deploy report sent to the central API always carries
+    /// the exact PackageId the registry knows — never a locally-invented or
+    /// heuristically-matched one. Null only for legacy packages built before
+    /// this field existed (those fall back to version+hash matching).
+    /// </summary>
+    public string? PackageId { get; init; }
+
     public required string ComponentId { get; init; }
     public required string Client { get; init; }
     public required string Component { get; init; }

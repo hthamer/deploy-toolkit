@@ -397,6 +397,21 @@ internal sealed class StageDeploy : StagePanel
         }
 
         var manifest = context.Manifest;
+
+        // Defensive traceability check (user request: "the deployer is sending
+        // the wrong PackageId"): the report must carry the PackageId the zip's
+        // manifest.json pinned — the id the Packager registered. After the
+        // StageLoadPackage fix these always agree; the warning catches any
+        // future regression and names BOTH ids in the run log.
+        if (manifest.PackageId is not null &&
+            !string.Equals(manifest.PackageId, packageId, StringComparison.OrdinalIgnoreCase))
+        {
+            logger.Warn(
+                $"PackageId mismatch: the package manifest carries {manifest.PackageId} but the " +
+                $"registry row is {packageId} — reporting the manifest's id would flag a different " +
+                "row; verify the package came from the expected Packager.");
+        }
+
         var report = new ApiDeploymentReport(
             packageId,
             manifest.Client,

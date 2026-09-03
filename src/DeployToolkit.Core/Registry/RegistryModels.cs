@@ -137,6 +137,26 @@ public sealed class PackageRecord
     /// flow reads the .zip straight from here.
     /// </summary>
     public string? PackageLocation { get; set; }
+
+    /// <summary>
+    /// Returns a copy of this record carrying <paramref name="packageId"/>.
+    /// Used by the Deployer when the zip's manifest.json pins a PackageId
+    /// that differs from the heuristic match — the deploy report must carry
+    /// the manifest's id (the one the Packager registered for this zip).
+    /// </summary>
+    public PackageRecord WithPackageId(string packageId) => new()
+    {
+        PackageId = packageId,
+        ComponentId = ComponentId,
+        Version = Version,
+        CreatedUtc = CreatedUtc,
+        ManifestJson = ManifestJson,
+        GitCommitSha = GitCommitSha,
+        Status = Status,
+        DeployedUtc = DeployedUtc,
+        DeployedBy = DeployedBy,
+        PackageLocation = PackageLocation,
+    };
 }
 
 public sealed class DeploymentRunRecord
@@ -194,8 +214,17 @@ public interface IRegistryStore
     /// Deployer can find the .zip without the builder having to copy it by
     /// hand (Option B: a shared folder path / UNC / URL where the .zip was
     /// uploaded). Null when no package store is configured.
+    /// <para>
+    /// The optional <paramref name="packageId"/> pins the record's
+    /// <see cref="PackageRecord.PackageId"/>: the Packager generates the ID
+    /// up front and embeds it in the manifest.json written into the .zip, so
+    /// the zip, the registry row and the Deployer's deploy report all carry
+    /// the SAME id. When null (legacy callers / offline catch-up records), a
+    /// fresh N-format GUID is generated — exactly the previous behavior.
+    /// </para>
     /// </summary>
-    Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest, string? packageLocation = null);
+    Task<PackageRecord> CreatePackageAsync(
+        string componentId, ComponentManifest manifest, string? packageLocation = null, string? packageId = null);
 
     Task MarkDeployedAsync(string packageId, string deployedBy, DateTimeOffset deployedUtc);
 

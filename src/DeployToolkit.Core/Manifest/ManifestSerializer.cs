@@ -11,6 +11,9 @@ namespace DeployToolkit.Core.Manifest;
 /// </summary>
 internal sealed class ManifestDto
 {
+    /// <summary>Null for legacy manifests — omitted on disk when null
+    /// (JsonIgnoreCondition.WhenWritingNull), absent in old zips.</summary>
+    public string? PackageId { get; set; }
     public string ComponentId { get; set; } = "";
     public string Client { get; set; } = "";
     public string Component { get; set; } = "";
@@ -55,6 +58,7 @@ public static class ManifestSerializer
     {
         var dto = new ManifestDto
         {
+            PackageId = manifest.PackageId,
             ComponentId = manifest.ComponentId,
             Client = manifest.Client,
             Component = manifest.Component,
@@ -86,6 +90,7 @@ public static class ManifestSerializer
 
         return new ComponentManifest
         {
+            PackageId = string.IsNullOrWhiteSpace(dto.PackageId) ? null : dto.PackageId,
             ComponentId = dto.ComponentId,
             Client = dto.Client,
             Component = dto.Component,

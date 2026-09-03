@@ -219,7 +219,8 @@ public sealed class LocalFileRegistryStore : IRegistryStore
         return packages.Where(p => p.Status == PackageStatus.Created).OrderBy(p => p.CreatedUtc).ToList();
     }
 
-    public async Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest, string? packageLocation = null)
+    public async Task<PackageRecord> CreatePackageAsync(
+        string componentId, ComponentManifest manifest, string? packageLocation = null, string? packageId = null)
     {
         await _lock.WaitAsync();
         try
@@ -229,7 +230,12 @@ public sealed class LocalFileRegistryStore : IRegistryStore
 
             var record = new PackageRecord
             {
-                PackageId = Guid.NewGuid().ToString("N"),
+                // Same contract as the EF store: pin the Packager's id when
+                // supplied (it is already embedded in the zip's manifest.json);
+                // generate when null (legacy callers).
+                PackageId = string.IsNullOrWhiteSpace(packageId)
+                    ? Guid.NewGuid().ToString("N")
+                    : packageId!,
                 ComponentId = componentId,
                 Version = manifest.Version,
                 CreatedUtc = manifest.CreatedUtc,

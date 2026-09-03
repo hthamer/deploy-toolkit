@@ -103,7 +103,9 @@ public static class DeployEndpoints
                 new ErrorResponse("A deploy report with a 'packageId' field is required."),
                 statusCode: StatusCodes.Status400BadRequest);
 
-        var canonicalResult = (request!.Result?.Trim()).ToLowerInvariant() switch
+        // Null-safe: a missing/null 'result' field must land in the 400
+        // branch below — never in a NullReferenceException (500).
+        var canonicalResult = request.Result?.Trim().ToLowerInvariant() switch
         {
             "success" => "Success",
             "failed" => "Failed",
@@ -117,13 +119,19 @@ public static class DeployEndpoints
                 statusCode: StatusCodes.Status400BadRequest);
 
         // --- 404: the package must exist in the registry -------------------
+        // Package ids are stored as N-format GUID strings, but the report may
+        // carry any textual GUID representation (N/D/B/P/X) — e.g. copied from
+        // SSMS or an error dialog. Normalize every variant and match with an
+        // IN clause instead of a brittle exact-string compare.
+        var packageIdVariants = PackageIdVariants(packageId);
         var package = await db.Packages
-            .FirstOrDefaultAsync(p => p.PackageId == packageId, http.RequestAborted);
+            .FirstOrDefaultAsync(p => packageIdVariants.Contains(p.PackageId), http.RequestAborted);
         if (package is null)
             return Results.Json(
                 new ErrorResponse(
                     $"Package '{packageId}' was not found in the registry. " +
-                    "Package the component first (the Packager creates the row)."),
+                    "Package the component first (the Packager creates the row) — " +
+                    "the PackageId must come from the manifest.json inside the package."),
                 statusCode: StatusCodes.Status404NotFound);
 
         // --- audit trail: same run-record fields as the local path ---------
@@ -213,6 +221,22 @@ public static class DeployEndpoints
             return ("", "", "Both 'username' and 'password' are required in the Basic credentials.");
 
         return (username, password, null);
+    }
+
+    /// <summary>Returns every textual variant of the reported PackageId that
+    /// could match the stored column: the raw string, the canonical N format
+    /// (no dashes) and the canonical D format, all compared case-insensitively
+    /// (the column collation is case-insensitive; the set is deduplicated).
+    /// Non-GUID ids are still matched by their raw value.</summary>
+    private static HashSet<string> PackageIdVariants(string packageId)
+    {
+        var variants = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { packageId };
+        if (Guid.TryParse(packageId, out var guid))
+        {
+            variants.Add(guid.ToString("N"));
+            variants.Add(guid.ToString("D"));
+        }
+        return variants;
     }
 
     private static IResult Unauthorized(HttpContext http, string message, bool includeChallenge = false)

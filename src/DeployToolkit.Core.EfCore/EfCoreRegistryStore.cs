@@ -274,13 +274,20 @@ public sealed class EfCoreRegistryStore : IRegistryStore
             .ToList();
     }
 
-    public async Task<PackageRecord> CreatePackageAsync(string componentId, ComponentManifest manifest, string? packageLocation = null)
+    public async Task<PackageRecord> CreatePackageAsync(
+        string componentId, ComponentManifest manifest, string? packageLocation = null, string? packageId = null)
     {
         await using var db = await _factory.CreateDbContextAsync();
 
         var record = new PackageRecord
         {
-            PackageId = Guid.NewGuid().ToString("N"),
+            // The Packager pins this id (it is already embedded in the
+            // manifest.json inside the .zip) so the registry row, the zip and
+            // the Deployer's deploy report all agree. Null = legacy callers
+            // generate here, exactly as before.
+            PackageId = string.IsNullOrWhiteSpace(packageId)
+                ? Guid.NewGuid().ToString("N")
+                : packageId!,
             ComponentId = componentId,
             Version = manifest.Version,
             CreatedUtc = manifest.CreatedUtc,
