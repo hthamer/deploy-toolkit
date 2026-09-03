@@ -361,17 +361,11 @@ internal sealed class StageDeploy : StagePanel
     /// stored procedures + indexes + constraints + foreign keys) and saves
     /// it as a .sql file alongside the file backup folder.
     ///
-    /// Uses SQL Server's <c>sys.objects</c> + <c>sp_helptext</c> + table
-    /// scripting instead of <c>BACKUP DATABASE TO DISK</c> because:
-    ///  - AWS RDS and other managed SQL services don't support
-    ///    <c>BACKUP DATABASE TO DISK</c> (no OS file access).
-    ///  - The script is portable — it can be run on any SQL Server to
-    ///    recreate the database schema and data.
-    ///  - It works even when the SQL Server service account doesn't have
-    ///    file system write permissions.
-    ///
-    /// Best-effort — a failure is logged at ERROR level (not WARN — the user
-    /// explicitly said this should be an error) but doesn't fail the deploy.
+    /// Compatible with SQL Server 2016 through 2022+ (uses only sys.* and
+    /// INFORMATION_SCHEMA views that exist in all versions, avoids .NET 5+
+    /// APIs for binary hex conversion, handles legacy types like text/ntext,
+    /// decimal/numeric precision, identity columns, computed columns, primary
+    /// keys, and special types like xml/geography/geometry/hierarchyid).
     /// </summary>
     private static async Task GenerateDatabaseBackupAsync(
         string connectionString, string backupFolder, RunLogger logger)
@@ -391,10 +385,11 @@ internal sealed class StageDeploy : StagePanel
             sb.AppendLine($"-- Contains: schema, data, triggers, stored procedures, indexes, constraints, foreign keys");
             sb.AppendLine();
 
-            // 1. Tables (schema via INFORMATION_SCHEMA + data via SELECT)
+            // 1. Tables (schema via sys.columns for full fidelity + data via SELECT)
             var tables = ExecuteReader(conn,
-                "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES " +
-                "WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME");
+                "SELECT s.name AS schema_name, t.name AS table_name " +
+                "FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id " +
+                "ORDER BY s.name, t.name");
 
             foreach (var row in tables)
             {
@@ -404,49 +399,71 @@ internal sealed class StageDeploy : StagePanel
                 sb.AppendLine($"-- Table: [{schema}].[{table}]");
                 sb.AppendLine($"-- ============================================================");
                 sb.AppendLine();
-
-                // Schema: column definitions
-                var columns = ExecuteReader(conn,
-                    $"SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT " +
-                    $"FROM INFORMATION_SCHEMA.COLUMNS " +
-                    $"WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}' " +
-                    $"ORDER BY ORDINAL_POSITION");
-
                 sb.AppendLine($"IF OBJECT_ID(N'[{schema}].[{table}]', N'U') IS NOT NULL DROP TABLE [{schema}].[{table}];");
                 sb.AppendLine($"CREATE TABLE [{schema}].[{table}]");
                 sb.AppendLine("(");
 
+                // Use sys.columns for full column metadata (identity, computed, precision, scale)
+                var columns = ExecuteReader(conn,
+                    $"SELECT c.name, t.name AS type_name, c.max_length, c.precision, c.scale, " +
+                    $"c.is_nullable, c.is_identity, c.is_computed, " +
+                    $"OBJECT_DEFINITION(c.default_object_id) AS default_val, " +
+                    $"cc.definition AS computed_def " +
+                    $"FROM sys.columns c " +
+                    $"JOIN sys.types t ON c.user_type_id = t.user_type_id " +
+                    $"LEFT JOIN sys.computed_columns cc ON c.object_id = cc.object_id AND c.column_id = cc.column_id " +
+                    $"WHERE c.object_id = OBJECT_ID(N'[{schema}].[{table}]') " +
+                    $"ORDER BY c.column_id");
+
                 var colLines = new List<string>();
+                var hasIdentity = false;
                 foreach (var col in columns)
                 {
                     var colName = col[0];
-                    var dataType = col[1];
+                    var typeName = col[1];
                     var maxLength = col[2];
-                    var isNullable = col[3];
-                    var defaultVal = col[4];
+                    var precision = col[3];
+                    var scale = col[4];
+                    var isNullable = col[5] == "1";
+                    var isIdentity = col[6] == "1";
+                    var isComputed = col[7] == "1";
+                    var defaultVal = col[8];
+                    var computedDef = col[9];
 
-                    var typeStr = dataType;
-                    if (!string.IsNullOrEmpty(maxLength) && maxLength != "-1")
-                        typeStr += $"({maxLength})";
-                    else if (maxLength == "-1")
-                        typeStr += "(MAX)";
-                    else if (dataType == "nvarchar" || dataType == "nchar" || dataType == "varchar" || dataType == "char")
-                        typeStr += "(MAX)";
+                    if (isIdentity) hasIdentity = true;
 
-                    var line = $"    [{colName}] {typeStr}";
-                    if (isNullable == "NO") line += " NOT NULL";
-                    else line += " NULL";
+                    var line = $"    [{colName}] ";
+
+                    if (isComputed && !string.IsNullOrEmpty(computedDef))
+                    {
+                        line += $"AS {computedDef}";
+                        colLines.Add(line);
+                        continue;
+                    }
+
+                    // Build the type string with precision/scale/length
+                    line += BuildTypeString(typeName, maxLength, precision, scale);
+
+                    if (isNullable) line += " NULL";
+                    else line += " NOT NULL";
+
+                    if (isIdentity)
+                        line += " IDENTITY(1,1)";
+
                     if (!string.IsNullOrEmpty(defaultVal))
                         line += $" DEFAULT {defaultVal}";
+
                     colLines.Add(line);
                 }
                 sb.AppendLine(string.Join("," + Environment.NewLine, colLines));
                 sb.AppendLine(");");
                 sb.AppendLine();
 
-                // Data: INSERT statements (batch via DataTable for speed)
+                // Data
                 sb.AppendLine($"-- Data for [{schema}].[{table}]");
-                sb.AppendLine($"SET IDENTITY_INSERT [{schema}].[{table}] ON;");
+                if (hasIdentity)
+                    sb.AppendLine($"SET IDENTITY_INSERT [{schema}].[{table}] ON;");
+
                 using var dataCmd = new Microsoft.Data.SqlClient.SqlCommand(
                     $"SELECT * FROM [{schema}].[{table}]", conn) { CommandTimeout = 300 };
                 using var reader = dataCmd.ExecuteReader();
@@ -464,28 +481,60 @@ internal sealed class StageDeploy : StagePanel
                         if (val is DBNull || val is null)
                             values.Add("NULL");
                         else if (val is string s)
-                            values.Add("'" + s.Replace("'", "''") + "'");
+                            values.Add("N'" + s.Replace("'", "''") + "'");
                         else if (val is bool b)
                             values.Add(b ? "1" : "0");
                         else if (val is DateTime dt)
-                            values.Add($"'{dt:yyyy-MM-dd HH:mm:ss.fff}'");
+                            values.Add($"'{dt:yyyy-MM-dd HH:mm:ss.fffffff}'");
+                        else if (val is DateTimeOffset dto)
+                            values.Add($"'{dto:yyyy-MM-dd HH:mm:ss.fffffff zzz}'");
                         else if (val is Guid g)
                             values.Add($"'{g}'");
                         else if (val is byte[] bytes)
-                            values.Add("0x" + Convert.ToHexString(bytes));
+                            values.Add("0x" + BytesToHex(bytes));
+                        else if (val is decimal dec)
+                            values.Add(dec.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                        else if (val is double d)
+                            values.Add(d.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+                        else if (val is float f)
+                            values.Add(f.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
                         else
-                            values.Add(val.ToString()?.Replace("'", "''") ?? "NULL");
+                            values.Add("'" + val.ToString()?.Replace("'", "''") + "'");
                     }
                     sb.AppendLine($"INSERT INTO [{schema}].[{table}] ({string.Join(", ", colNames)}) VALUES ({string.Join(", ", values)});");
                     rowCount++;
                 }
                 reader.Close();
-                sb.AppendLine($"SET IDENTITY_INSERT [{schema}].[{table}] OFF;");
+                if (hasIdentity)
+                    sb.AppendLine($"SET IDENTITY_INSERT [{schema}].[{table}] OFF;");
                 sb.AppendLine($"-- {rowCount} row(s) for [{schema}].[{table}]");
                 sb.AppendLine();
             }
 
-            // 2. Stored procedures (via sp_helptext)
+            // 2. Primary keys (via sys.key_constraints)
+            var pks = ExecuteReader(conn,
+                "SELECT SCHEMA_NAME(t.schema_id) AS s, t.name AS tbl, i.name AS idx_name, " +
+                "STUFF((" +
+                "  SELECT ', [' + c.name + ']' FROM sys.index_columns ic " +
+                "  JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id " +
+                "  WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0 " +
+                "  ORDER BY ic.key_ordinal FOR XML PATH('')), 1, 2, '') AS cols " +
+                "FROM sys.key_constraints kc " +
+                "JOIN sys.tables t ON kc.parent_object_id = t.object_id " +
+                "JOIN sys.indexes i ON kc.unique_index_id = i.index_id AND kc.parent_object_id = i.object_id " +
+                "WHERE kc.type = 'PK' ORDER BY s, tbl");
+            foreach (var pk in pks)
+            {
+                var pkSchema = pk[0];
+                var pkTable = pk[1];
+                var pkName = pk[2];
+                var pkCols = pk[3];
+                if (!string.IsNullOrEmpty(pkCols))
+                    sb.AppendLine($"ALTER TABLE [{pkSchema}].[{pkTable}] ADD CONSTRAINT [{pkName}] PRIMARY KEY ({pkCols});");
+            }
+            sb.AppendLine();
+
+            // 3. Stored procedures (via OBJECT_DEFINITION)
             var sps = ExecuteReader(conn,
                 "SELECT SCHEMA_NAME(schema_id) AS s, name FROM sys.objects " +
                 "WHERE type = 'P' AND is_ms_shipped = 0 ORDER BY s, name");
@@ -493,52 +542,52 @@ internal sealed class StageDeploy : StagePanel
             {
                 var spSchema = sp[0];
                 var spName = sp[1];
-                sb.AppendLine($"-- ============================================================");
                 sb.AppendLine($"-- Stored Procedure: [{spSchema}].[{spName}]");
-                sb.AppendLine($"-- ============================================================");
                 sb.AppendLine($"IF OBJECT_ID(N'[{spSchema}].[{spName}]', N'P') IS NOT NULL DROP PROCEDURE [{spSchema}].[{spName}];");
                 sb.AppendLine("GO");
                 var spText = ExecuteScalar<string>(conn,
                     $"SELECT OBJECT_DEFINITION(OBJECT_ID(N'[{spSchema}].[{spName}]'))");
                 if (!string.IsNullOrEmpty(spText))
                     sb.AppendLine(spText);
-                sb.AppendLine();
                 sb.AppendLine("GO");
                 sb.AppendLine();
             }
 
-            // 3. Triggers (via OBJECT_DEFINITION)
+            // 4. Triggers (via OBJECT_DEFINITION)
             var triggers = ExecuteReader(conn,
-                "SELECT SCHEMA_NAME(schema_id) AS s, name, OBJECT_NAME(parent_object_id) AS parent " +
+                "SELECT SCHEMA_NAME(schema_id) AS s, name " +
                 "FROM sys.objects WHERE type = 'TR' AND is_ms_shipped = 0 ORDER BY s, name");
             foreach (var trig in triggers)
             {
                 var trigSchema = trig[0];
                 var trigName = trig[1];
-                sb.AppendLine($"-- ============================================================");
                 sb.AppendLine($"-- Trigger: [{trigSchema}].[{trigName}]");
-                sb.AppendLine($"-- ============================================================");
                 var trigText = ExecuteScalar<string>(conn,
                     $"SELECT OBJECT_DEFINITION(OBJECT_ID(N'[{trigSchema}].[{trigName}]'))");
                 if (!string.IsNullOrEmpty(trigText))
                     sb.AppendLine(trigText);
-                sb.AppendLine();
                 sb.AppendLine("GO");
                 sb.AppendLine();
             }
 
-            // 4. Indexes (via sys.indexes + sys.index_columns)
+            // 5. Indexes (non-PK, via sys.indexes + sys.index_columns)
             var indexes = ExecuteReader(conn,
                 "SELECT SCHEMA_NAME(t.schema_id) AS s, t.name AS tbl, i.name AS idx, i.type_desc, " +
-                "i.is_unique, i.is_primary_key, STUFF((" +
+                "i.is_unique, " +
+                "STUFF((" +
                 "  SELECT ', [' + c.name + CASE ic.is_descending_key WHEN 1 THEN ' DESC' ELSE '' END + ']' " +
                 "  FROM sys.index_columns ic " +
                 "  JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id " +
                 "  WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0 " +
-                "  ORDER BY ic.key_ordinal FOR XML PATH('')), 1, 2, '') AS cols " +
+                "  ORDER BY ic.key_ordinal FOR XML PATH('')), 1, 2, '') AS cols, " +
+                "STUFF((" +
+                "  SELECT ', [' + c.name + ']' FROM sys.index_columns ic " +
+                "  JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id " +
+                "  WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1 " +
+                "  FOR XML PATH('')), 1, 2, '') AS included_cols " +
                 "FROM sys.indexes i " +
                 "JOIN sys.tables t ON i.object_id = t.object_id " +
-                "WHERE i.type > 0 AND i.is_primary_key = 0 AND i.name IS NOT NULL " +
+                "WHERE i.type > 0 AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 AND i.name IS NOT NULL " +
                 "ORDER BY s, tbl, idx");
             foreach (var idx in indexes)
             {
@@ -548,14 +597,20 @@ internal sealed class StageDeploy : StagePanel
                 var idxType = idx[3];
                 var isUnique = idx[4] == "1";
                 var idxCols = idx[5];
+                var includedCols = idx[6];
 
                 if (string.IsNullOrEmpty(idxCols)) continue;
 
-                sb.AppendLine($"CREATE {idxType} INDEX [{idxName}] ON [{idxSchema}].[{idxTable}] ({idxCols});");
+                var createLine = "CREATE ";
+                if (isUnique) createLine += "UNIQUE ";
+                createLine += $"{idxType} INDEX [{idxName}] ON [{idxSchema}].[{idxTable}] ({idxCols})";
+                if (!string.IsNullOrEmpty(includedCols))
+                    createLine += $" INCLUDE ({includedCols})";
+                sb.AppendLine(createLine + ";");
             }
             sb.AppendLine();
 
-            // 5. Foreign keys (via sys.foreign_keys)
+            // 6. Foreign keys (via sys.foreign_keys)
             var fks = ExecuteReader(conn,
                 "SELECT SCHEMA_NAME(fk.schema_id) AS s, fk.name, " +
                 "SCHEMA_NAME(tp.schema_id) AS parent_schema, tp.name AS parent_table, " +
@@ -574,7 +629,6 @@ internal sealed class StageDeploy : StagePanel
                 "ORDER BY s, fk.name");
             foreach (var fk in fks)
             {
-                var fkSchema = fk[0];
                 var fkName = fk[1];
                 var parentSchema = fk[2];
                 var parentTable = fk[3];
@@ -594,6 +648,81 @@ internal sealed class StageDeploy : StagePanel
 
         var sizeMB = new FileInfo(scriptPath).Length / (1024.0 * 1024);
         logger.Info($"Database script backup completed: {scriptPath} ({sizeMB:F1} MB)");
+    }
+
+    /// <summary>Builds the SQL type string with length/precision/scale based on
+    /// the sys.columns + sys.types metadata. Handles all SQL Server types
+    /// from 2016 through 2022+ including legacy types (text, ntext, image).</summary>
+    private static string BuildTypeString(string typeName, string maxLengthStr, string precisionStr, string scaleStr, string isNullableStr = "")
+    {
+        // Types that don't take length/precision/scale at all.
+        var noLengthTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "int", "bigint", "smallint", "tinyint", "bit", "datetime", "smalldatetime",
+          "money", "smallmoney", "timestamp", "rowversion", "uniqueidentifier",
+          "sql_variant", "geography", "geometry", "hierarchyid", "xml", "date", "time" };
+
+        if (noLengthTypes.Contains(typeName))
+            return typeName;
+
+        // Legacy large types — no length specifier.
+        if (typeName.Equals("text", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Equals("ntext", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Equals("image", StringComparison.OrdinalIgnoreCase))
+            return typeName;
+
+        // decimal/numeric — precision and scale.
+        if (typeName.Equals("decimal", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Equals("numeric", StringComparison.OrdinalIgnoreCase))
+        {
+            if (int.TryParse(precisionStr, out var p) && p > 0)
+            {
+                if (int.TryParse(scaleStr, out var s) && s > 0)
+                    return $"{typeName}({p},{s})";
+                return $"{typeName}({p})";
+            }
+            return typeName;
+        }
+
+        // datetime2, datetimeoffset, time — scale.
+        if (typeName.Equals("datetime2", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Equals("datetimeoffset", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Equals("time", StringComparison.OrdinalIgnoreCase))
+        {
+            if (int.TryParse(scaleStr, out var s) && s >= 0)
+                return $"{typeName}({s})";
+            return typeName; // default scale
+        }
+
+        // Character/binary types — max_length from sys.columns.
+        // sys.columns.max_length is in bytes: nvarchar/nchar = 2 bytes/char,
+        // varchar/char/varbinary/binary = 1 byte/char. -1 = MAX.
+        if (int.TryParse(maxLengthStr, out var maxLen))
+        {
+            if (maxLen == -1)
+                return $"{typeName}(MAX)";
+
+            // For nvarchar/nchar: max_length is 2x the char count.
+            if (typeName.Equals("nvarchar", StringComparison.OrdinalIgnoreCase) ||
+                typeName.Equals("nchar", StringComparison.OrdinalIgnoreCase))
+            {
+                var charLen = maxLen / 2;
+                return $"{typeName}({charLen})";
+            }
+
+            return $"{typeName}({maxLen})";
+        }
+
+        // Fallback: just the type name.
+        return typeName;
+    }
+
+    /// <summary>Converts a byte array to a hex string without using
+    /// Convert.ToHexString (which is .NET 5+ — the Deployer targets net8.0
+    /// but this ensures compatibility with any runtime that might host the
+    /// method). Uses BitConverter + Replace for a clean hex string.</summary>
+    private static string BytesToHex(byte[] bytes)
+    {
+        return BitConverter.ToString(bytes).Replace("-", "");
     }
 
     /// <summary>Helper: executes a reader and returns all rows as string
