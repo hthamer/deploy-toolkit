@@ -14,9 +14,12 @@ using System.Threading.RateLimiting;
 //     each request simply presents credentials that must match the stored
 //     ones.
 //   * PasswordRotationService — a hosted background service that replaces
-//     every active user's password with a crypto-random one every 45
-//     minutes (configurable), publishing the current password through
-//     App_Data/current-api-password.json and (optionally) the log.
+//     the API users' password with a crypto-random one every 45 minutes.
+//     Everything it needs lives IN THE DATABASE (user requirement): the
+//     schedule and related settings are read from the ApiSettings table on
+//     every cycle, and after each rotation the new credential is registered
+//     in the ApiCredentialLogs table (latest row per username = the current
+//     working password) — no appsettings.json secrets, no state file.
 //
 // The route/payload contract of /api/auth/authenticate is pinned by the
 // WinForms clients (RegistryApiClient.AuthenticatePath in
@@ -30,9 +33,6 @@ builder.Services.AddRegistryDatabase(builder.Configuration);
 
 // ---- auth services ---------------------------------------------------------
 builder.Services.AddSingleton<IPasswordHasher, Pbkdf2PasswordHasher>();
-builder.Services.AddSingleton<IPasswordRotationState, PasswordRotationState>();
-builder.Services.Configure<PasswordRotationOptions>(
-    builder.Configuration.GetSection("Auth:PasswordRotation"));
 builder.Services.AddHostedService<PasswordRotationService>();
 
 // ---- brute-force backstop on the login endpoint ----------------------------
@@ -81,8 +81,9 @@ if (app.Environment.IsDevelopment())
 
 app.UseRateLimiter();
 
-// Schema + initial user BEFORE the first request is accepted (the rotation
-// service starts in parallel and picks the users up on its first pass).
+// Schema + settings + initial credential BEFORE the first request is
+// accepted (the rotation service starts afterwards and reads its settings
+// from the freshly seeded ApiSettings rows).
 await app.InitializeRegistryDatabaseAsync();
 
 // Plain health/identity probe for load balancers and smoke tests.
@@ -96,7 +97,7 @@ app.MapGet("/", () => Results.Ok(new
     {
         "POST /api/auth/authenticate",
         "GET  /swagger (Development only)",
-        "background: password rotation (Auth:PasswordRotation)",
+        "background: password rotation (settings: ApiSettings table, credentials: ApiCredentialLogs table)",
     },
 }))
 .WithTags("Health");

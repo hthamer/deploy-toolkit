@@ -46,6 +46,20 @@ public sealed class RegistryDbContext : DbContext
     /// </summary>
     public DbSet<ApiUser> ApiUsers => Set<ApiUser>();
 
+    /// <summary>
+    /// API runtime settings (password-rotation schedule etc.) — stored in
+    /// the registry DATABASE per the toolkit requirement (never in
+    /// appsettings.json). The Packager/Deployer never query this table.
+    /// </summary>
+    public DbSet<ApiSetting> ApiSettings => Set<ApiSetting>();
+
+    /// <summary>
+    /// Audit trail of API credential changes; the latest row per username
+    /// IS the current working credential (see the type doc for the
+    /// plaintext trade-off). The Packager/Deployer never query this table.
+    /// </summary>
+    public DbSet<ApiCredentialLog> ApiCredentialLogs => Set<ApiCredentialLog>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Client>(e =>
@@ -168,6 +182,32 @@ public sealed class RegistryDbContext : DbContext
             // enforced in the API (same ToLower() semantics as client names);
             // the plain unique index still guards against raw duplicates.
             e.HasIndex(u => u.Username).IsUnique();
+        });
+
+        modelBuilder.Entity<ApiSetting>(e =>
+        {
+            e.ToTable("ApiSettings");
+            e.HasKey(s => s.Key);
+            e.Property(s => s.Key).HasMaxLength(150).ValueGeneratedNever();
+            e.Property(s => s.Value).HasMaxLength(1000);
+            e.Property(s => s.UpdatedUtc);
+        });
+
+        modelBuilder.Entity<ApiCredentialLog>(e =>
+        {
+            e.ToTable("ApiCredentialLogs");
+            e.HasKey(l => l.Id);
+            e.Property(l => l.Id).HasMaxLength(32).ValueGeneratedNever();
+            e.Property(l => l.Username).HasMaxLength(100);
+            // Generated passwords are ≤ 128 chars (RandomPasswordGenerator
+            // clamps to that) — 128 covers the column exactly.
+            e.Property(l => l.Password).HasMaxLength(128);
+            e.Property(l => l.Reason).HasMaxLength(30);
+            e.Property(l => l.CreatedUtc);
+
+            // Hot query: "current credential for user X" = newest row for
+            // that username. (Username, CreatedUtc DESC) via this index.
+            e.HasIndex(l => new { l.Username, l.CreatedUtc });
         });
     }
 }

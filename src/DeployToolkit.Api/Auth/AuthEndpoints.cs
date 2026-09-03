@@ -1,3 +1,4 @@
+using DeployToolkit.Api.Infrastructure;
 using DeployToolkit.Core.EfCore;
 using Microsoft.EntityFrameworkCore;
 
@@ -20,7 +21,8 @@ namespace DeployToolkit.Api.Auth;
 /// <see cref="PasswordRotationService"/> replaces those passwords on a
 /// schedule, and the response's <c>passwordChangedUtc</c> /
 /// <c>passwordRotatesAtUtc</c> fields tell callers when that happened /
-/// will happen next.
+/// will happen next (from <c>ApiUsers.PasswordChangedUtc</c> and the
+/// <c>Auth.Rotation.NextRunUtc</c> row of the ApiSettings table).
 /// </summary>
 public static class AuthEndpoints
 {
@@ -56,7 +58,7 @@ public static class AuthEndpoints
         AuthenticateRequest? request,
         RegistryDbContext db,
         IPasswordHasher hasher,
-        IPasswordRotationState rotationState,
+        ApiSettingsStore settingsStore,
         ILogger<Program> logger,
         HttpContext http)
     {
@@ -119,7 +121,8 @@ public static class AuthEndpoints
             Username: user.Username,
             DisplayName: user.DisplayName,
             PasswordChangedUtc: user.PasswordChangedUtc,
-            PasswordRotatesAtUtc: rotationState.NextRotationUtc));
+            PasswordRotatesAtUtc: await settingsStore.GetDateTimeUtcAsync(
+                ApiSettingKeys.RotationNextRunUtc, http.RequestAborted)));
     }
 
     private static IResult InvalidCredentials() => Results.Json(
