@@ -51,6 +51,15 @@ public sealed class ApiUser
     /// successful login. Updated by the API on every successful login.</summary>
     public DateTimeOffset? LastLoginUtc { get; set; }
 
+    /// <summary>
+    /// When the password was last replaced (UTC) — by the API's background
+    /// rotation service (Auth:PasswordRotation, default every 45 minutes) or
+    /// by any manual hash update. Null only for a row that predates the
+    /// rotation service and has never been rotated since. Lets operators
+    /// verify the rotation is actually running with a plain SELECT.
+    /// </summary>
+    public DateTimeOffset? PasswordChangedUtc { get; set; }
+
     /// <summary>Convenience flag for API responses. Not mapped.</summary>
     [NotMapped]
     public bool HasNeverLoggedIn => LastLoginUtc is null;

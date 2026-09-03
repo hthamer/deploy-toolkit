@@ -6,7 +6,8 @@ registry database — the **same database the Packager app uses**
 connection string taken from `appsettings.json` instead of the WinForms
 settings file.
 
-Phase 1 scope: **username/password authentication.**
+Phase 1 scope: **username/password authentication — token-free by design**
+plus a **background service that rotates the passwords every 45 minutes**.
 
 ```
 POST {baseUrl}/api/auth/authenticate
@@ -21,14 +22,13 @@ status code plus the response body as the failure detail.
 
 ## Endpoints
 
-| Method | Route                    | Auth           | Purpose |
-|--------|--------------------------|----------------|---------|
-| POST   | `/api/auth/authenticate` | none           | Validates the username/password pair against `ApiUsers` in the registry DB. **200** → `{status, message, username, displayName, tokenType, accessToken, expiresAtUtc}` · **400** → missing fields · **401** → unknown user / wrong password / disabled account (one generic message — no user enumeration) · **429** → per-IP rate limit. |
-| GET    | `/api/auth/me`           | Bearer (JWT)   | Protected sample endpoint: echoes the identity carried by the token. The pattern phase 2 protected endpoints (`POST /api/deploy`, …) reuse. |
-| GET    | `/`                      | none           | Health/identity probe. |
+| Method | Route                    | Auth | Purpose |
+|--------|--------------------------|------|---------|
+| POST   | `/api/auth/authenticate` | none | Validates the username/password pair against `ApiUsers` in the registry DB. **200** → `{status, message, username, displayName, passwordChangedUtc, passwordRotatesAtUtc}` · **400** → missing fields · **401** → unknown user / wrong password / disabled account (one generic message — no user enumeration) · **429** → per-IP rate limit. |
+| GET    | `/`                      | none | Health/identity probe. |
 | *      | `/swagger`               | Development only | Swagger UI for interactive testing. |
 
-Successful login response example:
+Successful login response example (no token fields — there is no token flow):
 
 ```json
 {
@@ -36,17 +36,40 @@ Successful login response example:
   "message": "Authentication succeeded.",
   "username": "admin",
   "displayName": "Registry Administrator",
-  "tokenType": "Bearer",
-  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.…",
-  "expiresAtUtc": "2026-09-03T18:24:11.794+00:00"
+  "passwordChangedUtc": "2026-09-03T11:03:48.295+00:00",
+  "passwordRotatesAtUtc": "2026-09-03T11:48:48.295+00:00"
 }
 ```
 
-Call a protected endpoint with:
+## Password rotation (background service)
 
-```
-Authorization: Bearer <accessToken>
-```
+`PasswordRotationService` is a hosted `BackgroundService` that replaces the
+API users' passwords on a schedule:
+
+* **Cadence** — first pass `InitialDelaySeconds` (default 10) after startup,
+  then every `IntervalMinutes` (default **45 minutes**, per requirement).
+  The initial pass immediately supersedes any password that came from
+  configuration/seed — a plaintext in appsettings.json should not stay
+  valid forever.
+* **What changes** — every *active* `ApiUser` row (optionally filtered with
+  the comma-separated `Usernames` allow-list) gets its own crypto-random
+  password (24 chars, unambiguous alphabet, `RandomNumberGenerator`), stored
+  as a PBKDF2-SHA256 hash. `PasswordChangedUtc` is stamped for auditing —
+  `SELECT Username, PasswordChangedUtc FROM ApiUsers` tells you the rotation
+  is alive.
+* **Where the new password goes** — with no token flow, the operator/clients
+  must learn the current password out-of-band:
+  * `App_Data/current-api-password.json` — the CURRENT password set
+    (overwritten every cycle, never a history):
+    `{"generatedAtUtc": …, "nextRotationUtc": …, "users": [{"username": …, "password": …}]}`.
+  * The application log (`NEW password for API user '…'`), when
+    `LogPasswords` is enabled (default).
+  Both channels are deliberate, documented trade-offs: anyone who can read
+  them can log in until the next cycle. Disable `LogPasswords` in hardened
+  environments and treat the state file as the single distribution channel.
+* **Failure policy** — a failed cycle (DB blip) is logged and retried at the
+  next tick; the previous password stays valid meanwhile (availability over
+  strict rotation SLA in phase 1).
 
 ## Security model
 
@@ -56,15 +79,14 @@ Authorization: Bearer <accessToken>
   `Pbkdf2PasswordHasher`. Verification is constant-time
   (`CryptographicOperations.FixedTimeEquals`), and unknown usernames burn
   the same PBKDF2 work as real lookups (no timing-based user enumeration).
-* **Tokens** are HS256 JWTs (≥ 256-bit signing key), lifetime-validated with
-  a 1-minute clock skew, carrying `sub` (stable user id), `unique_name`
-  (username) and `display_name`. Stateless — no session table; expiry (and
-  re-authentication) is the phase-1 logout story.
+* **No tokens, no sessions** — every request presents username + password;
+  the stateless API validates and answers. The 45-minute rotation caps the
+  blast radius of any leaked credential.
 * **Brute-force backstop** — per-IP fixed-window rate limit on
   `/api/auth/*` (default 10 requests/minute, `Auth:RateLimit:*`).
-* **Fail-fast configuration** — the host refuses to start with a missing or
-  too-short signing key, a missing connection string, or an unsupported
-  database provider, instead of failing at the first login.
+* **Fail-fast configuration** — the host refuses to start with a missing
+  connection string or an unsupported database provider, instead of failing
+  at the first login.
 
 ## Configuration (appsettings.json)
 
@@ -81,14 +103,17 @@ Authorization: Bearer <accessToken>
   "Auth": {
     "SeedAdmin": {                    // creates the FIRST ApiUser ONLY when the table is empty
       "Username": "",
-      "Password": "",
+      "Password": "",                 // rotation replaces it after the first cycle
       "DisplayName": ""
     },
-    "Jwt": {
-      "Issuer": "DeployToolkit.RegistryApi",
-      "Audience": "DeployToolkit.Clients",
-      "AccessTokenMinutes": 480,
-      "SigningKey": ""                // REQUIRED, ≥ 32 chars: openssl rand -base64 48
+    "PasswordRotation": {
+      "Enabled": true,
+      "IntervalMinutes": 45,          // user requirement: every 45 minutes
+      "InitialDelaySeconds": 10,
+      "PasswordLength": 24,
+      "Usernames": "",                // empty = all active users
+      "WriteStateFile": true,
+      "LogPasswords": true
     },
     "RateLimit": { "PermitLimit": 10, "WindowSeconds": 60 }
   }
@@ -97,25 +122,28 @@ Authorization: Bearer <accessToken>
 
 Every value can be overridden by environment variables (never commit real
 secrets — plan §12): `ConnectionStrings__Registry`,
-`Auth__Jwt__SigningKey`, `Auth__SeedAdmin__Username`,
-`Auth__SeedAdmin__Password`, …
+`Auth__SeedAdmin__Username`, `Auth__SeedAdmin__Password`,
+`Auth__PasswordRotation__IntervalMinutes`, …
 
 `appsettings.Development.json` switches the store to a local SQLite file
-(`registry-dev.db`), seeds `admin` / `ChangeMe!123` and uses a throwaway
-signing key — **development conveniences only**, exactly the provider-neutral
-model + `EnsureCreated` split the `DeployToolkit.EfCore.SelfTest` harness
-uses. Production stays on SQL Server / Azure SQL with real migrations.
+(`registry-dev.db`) and seeds `admin` / `ChangeMe!123` — development
+conveniences only, exactly the provider-neutral model + `EnsureCreated`
+split the `DeployToolkit.EfCore.SelfTest` harness uses. Production stays on
+SQL Server / Azure SQL with real migrations. **Note:** rotation is active in
+Development too — 10 seconds after startup the seeded password stops
+working; read `App_Data/current-api-password.json` for the current one.
 
 ## Database changes
 
-`DeployToolkit.Core.EfCore` gained one entity + migration:
+`DeployToolkit.Core.EfCore` gained one entity + two migrations:
 
 * `ApiUser` / table **`ApiUsers`** — API credentials (username unique,
   PBKDF2 password hash, `IsActive` soft-disable, `CreatedUtc`,
-  `LastLoginUtc`). Migration `20260903103809_AddApiUsers` is a plain
-  `CREATE TABLE`: it applies cleanly to an existing registry, and the
+  `LastLoginUtc`, `PasswordChangedUtc`). `20260903103809_AddApiUsers` is a
+  plain `CREATE TABLE` and `20260903105500_AddPasswordChangedUtc` a plain
+  `ALTER TABLE … ADD`: both apply cleanly to an existing registry, and the
   Packager/Deployer simply never query the table. Their startup
-  `MigrateAsync` picks the new migration up automatically.
+  `MigrateAsync` picks the new migrations up automatically.
 
 ## Running
 
@@ -123,34 +151,35 @@ uses. Production stays on SQL Server / Azure SQL with real migrations.
 # from the repo root
 dotnet run --project src/DeployToolkit.Api            # http://localhost:5080 (Development profile)
 
-# production-ish: point at SQL Server and provide a real key
+# production-ish: point at SQL Server
 ConnectionStrings__Registry="Server=tcp:<server>.database.windows.net,1433;Database=DeployToolkitRegistry;User Id=…;Password=…;Encrypt=True;" \
-Auth__Jwt__SigningKey="<openssl rand -base64 48>" \
 dotnet run --project src/DeployToolkit.Api --urls http://+:80
 ```
 
 First run on an empty SQL Server registry: the startup migration applies
 `InitialCreate` → `AddClientProfileFields` → `AddPackageLocation` →
-`AddApiUsers` in order, then the seed step (if configured) creates the
-first user. Behind IIS/reverse proxy, terminate TLS there and keep the
-API on plain HTTP internally — the Deployer's `ApiBaseUrl` should then be
-the `https://…` front door.
+`AddApiUsers` → `AddPasswordChangedUtc` in order, then the seed step (if
+configured) creates the first user, and the rotation service takes over
+from there. Behind IIS/reverse proxy, terminate TLS there and keep the API
+on plain HTTP internally — the Deployer's `ApiBaseUrl` should then be the
+`https://…` front door.
 
 ## Creating additional users (until phase 2 adds management endpoints)
 
-```sql
--- hash format produced by Pbkdf2PasswordHasher (210000 iterations);
--- generate the row's PasswordHash with the API's hasher (dotnet-script /
--- a small console call to Pbkdf2PasswordHasher.Hash) and insert:
-INSERT INTO ApiUsers (UserId, Username, DisplayName, PasswordHash, IsActive, CreatedUtc)
-VALUES (LOWER(REPLACE(NEWID(),'-','')), 'deployer1', 'Deployer account', 'pbkdf2-sha256$…', 1, SYSUTCDATETIME());
-```
+Insert rows directly into `ApiUsers` with hashes produced by
+`Pbkdf2PasswordHasher.Hash` (e.g. via a small console call). The rotation
+service picks up new active rows automatically on its next cycle — you do
+NOT need to manage their passwords by hand.
 
 ## What phase 2+ is expected to add
 
 * `POST /api/deploy` — receives the Deployer's `ApiDeploymentReport`
-  (camelCase, already defined in `RegistryApiClient`) and writes a
-  `DeploymentRunRecord`; protected by the same Bearer token.
-* User management endpoints (create / disable / password change).
-* Refresh-token or short-lived-token strategy if the deployment flows need
-  longer sessions than `AccessTokenMinutes`.
+  (camelCase, already defined in `RegistryApiClient`), authenticated by the
+  same username/password pair (sent per request — e.g. HTTP Basic or a
+  small credential header — matching the token-free phase-1 model), and
+  writes a `DeploymentRunRecord`.
+* User management endpoints (create / disable / trigger an out-of-band
+  rotation).
+* If the 45-minute rotation ever collides with real-world deployment
+  windows, consider per-user rotation schedules or a manual
+  "extend current password" toggle.

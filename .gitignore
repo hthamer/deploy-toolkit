@@ -59,3 +59,5 @@ nunit-*.xml
 
 # DeployToolkit.Api local dev store (Database:Provider=Sqlite in Development)
 src/DeployToolkit.Api/registry-dev.db*
+# DeployToolkit.Api password-rotation state (current passwords — never commit)
+src/DeployToolkit.Api/App_Data/

@@ -162,6 +162,7 @@ public sealed class RegistryDbContext : DbContext
             e.Property(u => u.PasswordHash).HasMaxLength(500);
             e.Property(u => u.CreatedUtc);
             e.Property(u => u.LastLoginUtc);
+            e.Property(u => u.PasswordChangedUtc);
 
             // Login name is the lookup key — case-insensitive uniqueness is
             // enforced in the API (same ToLower() semantics as client names);

@@ -14,33 +14,26 @@ public sealed record AuthenticateRequest(
 
 /// <summary>
 /// Successful response of <c>POST /api/auth/authenticate</c> (HTTP 200).
-/// Serialized camelCase. The <see cref="AccessToken"/> is a signed JWT
-/// (HS256) that must be sent as <c>Authorization: Bearer …</c> on endpoints
-/// that require an authenticated caller (phase 2+: <c>/api/deploy</c>).
-/// The Deployer's login dialog shows this body verbatim (truncated) as its
-/// green "Login OK" detail text — keep it compact and human-readable.
+/// Serialized camelCase. Deliberately token-free: the API authenticates each
+/// request by validating the submitted username/password pair against the
+/// credentials stored in the registry database — no JWT, no bearer flow, no
+/// client-side session state. The WinForms clients just check the HTTP
+/// status code (200 = Login OK) and may show the body as detail text.
+///
+/// The two rotation fields let operators and callers see when the current
+/// password was set and when the background rotation service will replace
+/// it — null while rotation is disabled or before the first rotation.
 /// </summary>
 public sealed record AuthenticateResponse(
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("username")] string Username,
     [property: JsonPropertyName("displayName")] string? DisplayName,
-    [property: JsonPropertyName("tokenType")] string TokenType,
-    [property: JsonPropertyName("accessToken")] string AccessToken,
-    [property: JsonPropertyName("expiresAtUtc")] DateTimeOffset ExpiresAtUtc);
+    [property: JsonPropertyName("passwordChangedUtc")] DateTimeOffset? PasswordChangedUtc,
+    [property: JsonPropertyName("passwordRotatesAtUtc")] DateTimeOffset? PasswordRotatesAtUtc);
 
 /// <summary>Failure body (400/401/429): a single machine- and human-readable
 /// error string. Never reveals whether the username or the password was
 /// wrong (no user enumeration), and never echoes the submitted password.</summary>
 public sealed record ErrorResponse(
     [property: JsonPropertyName("error")] string Error);
-
-/// <summary>Response of <c>GET /api/auth/me</c> (requires a valid Bearer
-/// token) — lets a caller (and the phase-2 Deployer) confirm the token it
-/// holds is alive and whose it is.</summary>
-public sealed record MeResponse(
-    [property: JsonPropertyName("userId")] string UserId,
-    [property: JsonPropertyName("username")] string Username,
-    [property: JsonPropertyName("displayName")] string? DisplayName,
-    [property: JsonPropertyName("issuedAtUtc")] DateTimeOffset IssuedAtUtc,
-    [property: JsonPropertyName("expiresAtUtc")] DateTimeOffset ExpiresAtUtc);

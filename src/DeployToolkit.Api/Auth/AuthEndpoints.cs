@@ -1,5 +1,3 @@
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
 using DeployToolkit.Core.EfCore;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,6 +13,14 @@ namespace DeployToolkit.Api.Auth;
 /// treats HTTP 2xx as "Login OK" and surfaces any other status code plus
 /// the raw response body to the user. Keep the contract stable; add NEW
 /// endpoints instead of changing these.
+///
+/// Deliberately NO bearer/JWT flow: every request authenticates by
+/// presenting the username and password that match the credentials saved in
+/// the registry database. The background
+/// <see cref="PasswordRotationService"/> replaces those passwords on a
+/// schedule, and the response's <c>passwordChangedUtc</c> /
+/// <c>passwordRotatesAtUtc</c> fields tell callers when that happened /
+/// will happen next.
 /// </summary>
 public static class AuthEndpoints
 {
@@ -35,28 +41,22 @@ public static class AuthEndpoints
             .Produces<ErrorResponse>(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status429TooManyRequests);
 
-        group.MapGet("/me", GetMeAsync)
-            .RequireAuthorization()
-            .WithName("Me")
-            .WithSummary("Echo back the identity carried by the presented Bearer token.")
-            .Produces<MeResponse>(StatusCodes.Status200OK)
-            .Produces(StatusCodes.Status401Unauthorized);
-
         return app;
     }
 
     /// <summary>
     /// The phase-1 endpoint. Flow: find the (active) user case-insensitively
-    /// → constant-time PBKDF2 verification → stamp LastLoginUtc → issue the
-    /// JWT. Unknown user, wrong password and disabled account all end in
-    /// HTTP 401; the message never says WHICH factor failed (no user
-    /// enumeration), and the password never appears in logs or responses.
+    /// → constant-time PBKDF2 verification → stamp LastLoginUtc → 200 with
+    /// the rotation timestamps. Unknown user, wrong password and disabled
+    /// account all end in HTTP 401; the message never says WHICH factor
+    /// failed (no user enumeration), and the password never appears in
+    /// logs or responses.
     /// </summary>
     private static async Task<IResult> AuthenticateAsync(
         AuthenticateRequest? request,
         RegistryDbContext db,
         IPasswordHasher hasher,
-        JwtTokenService tokens,
+        IPasswordRotationState rotationState,
         ILogger<Program> logger,
         HttpContext http)
     {
@@ -105,56 +105,24 @@ public static class AuthEndpoints
             return InvalidCredentials();
         }
 
-        // --- success: stamp last login, issue the token ---
-        var issuedAtUtc = DateTimeOffset.UtcNow;
-        user.LastLoginUtc = issuedAtUtc;
+        // --- success: stamp last login, answer with the rotation metadata ---
+        user.LastLoginUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
 
-        var token = tokens.CreateToken(user, issuedAtUtc);
         logger.LogInformation(
-            "API user '{Username}' authenticated from {RemoteIp}; token expires {ExpiresAtUtc:O}.",
-            username, http.Connection.RemoteIpAddress, token.ExpiresAtUtc);
+            "API user '{Username}' authenticated from {RemoteIp}.",
+            username, http.Connection.RemoteIpAddress);
 
         return Results.Ok(new AuthenticateResponse(
             Status: "ok",
             Message: "Authentication succeeded.",
             Username: user.Username,
             DisplayName: user.DisplayName,
-            TokenType: token.TokenType,
-            AccessToken: token.Token,
-            ExpiresAtUtc: token.ExpiresAtUtc));
+            PasswordChangedUtc: user.PasswordChangedUtc,
+            PasswordRotatesAtUtc: rotationState.NextRotationUtc));
     }
 
     private static IResult InvalidCredentials() => Results.Json(
         new ErrorResponse("Invalid username or password."),
         statusCode: StatusCodes.Status401Unauthorized);
-
-    /// <summary>Protected sample endpoint (JWT required) — the proof that
-    /// the credential model actually secures the API, and the shape later
-    /// phases reuse for /api/deploy etc.</summary>
-    private static IResult GetMeAsync(
-        ClaimsPrincipal principal, JwtTokenService tokens, HttpContext http)
-    {
-        var userId = principal.FindFirstValue(JwtRegisteredClaimNames.Sub)
-            ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
-        var username = principal.FindFirstValue(ClaimTypes.Name)
-            ?? principal.FindFirstValue(JwtRegisteredClaimNames.UniqueName);
-        var displayName = principal.FindFirstValue(JwtTokenService.DisplayNameClaimType);
-
-        // Signature and lifetime were already validated by the bearer
-        // handler before we get here; re-reading the header only pulls out
-        // the lifetime metadata for the echo.
-        var header = http.Request.Headers.Authorization.ToString();
-        var bearerToken = header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
-            ? header["Bearer ".Length..].Trim()
-            : null;
-        tokens.TryReadLifetime(bearerToken, out var issuedAtUtc, out var expiresAtUtc);
-
-        return Results.Ok(new MeResponse(
-            UserId: userId ?? string.Empty,
-            Username: username ?? string.Empty,
-            DisplayName: displayName,
-            IssuedAtUtc: issuedAtUtc,
-            ExpiresAtUtc: expiresAtUtc));
-    }
 }

@@ -1,11 +1,7 @@
-using System.Text;
-using System.Threading.RateLimiting;
 using DeployToolkit.Api.Auth;
 using DeployToolkit.Api.Infrastructure;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
-using Microsoft.IdentityModel.Tokens;
-using Microsoft.OpenApi.Models;
+using System.Threading.RateLimiting;
 
 // ---------------------------------------------------------------------------
 // DeployToolkit.RegistryApi — Phase 1 (plan §2.2 "central API").
@@ -14,10 +10,13 @@ using Microsoft.OpenApi.Models;
 //   * POST /api/auth/authenticate — validates a username/password pair
 //     against the ApiUsers credentials saved in the SAME registry database
 //     the Packager app uses (EF Core / SQL Server; connection string from
-//     appsettings.json), and returns a signed JWT access token on success.
-//   * GET  /api/auth/me          — Bearer-token-protected sample endpoint
-//     proving the credential model; the shape later protected endpoints
-//     (e.g. POST /api/deploy, phase 2) will reuse.
+//     appsettings.json). Deliberately TOKEN-FREE: no JWT, no bearer flow —
+//     each request simply presents credentials that must match the stored
+//     ones.
+//   * PasswordRotationService — a hosted background service that replaces
+//     every active user's password with a crypto-random one every 45
+//     minutes (configurable), publishing the current password through
+//     App_Data/current-api-password.json and (optionally) the log.
 //
 // The route/payload contract of /api/auth/authenticate is pinned by the
 // WinForms clients (RegistryApiClient.AuthenticatePath in
@@ -31,31 +30,10 @@ builder.Services.AddRegistryDatabase(builder.Configuration);
 
 // ---- auth services ---------------------------------------------------------
 builder.Services.AddSingleton<IPasswordHasher, Pbkdf2PasswordHasher>();
-builder.Services.AddSingleton<JwtTokenService>();
-
-// Bearer authentication for everything below the login step. The
-// JwtTokenService constructor validates Auth:Jwt (signing key length,
-// issuer/audience) and round-trips a probe token — a misconfigured host
-// fails at startup, not at the first login attempt.
-builder.Services
-    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        var jwt = builder.Configuration.GetSection("Auth:Jwt");
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidIssuer = jwt["Issuer"] ?? "DeployToolkit.RegistryApi",
-            ValidateAudience = true,
-            ValidAudience = jwt["Audience"] ?? "DeployToolkit.Clients",
-            ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(jwt["SigningKey"] ?? string.Empty)),
-            ValidateLifetime = true,
-            ClockSkew = TimeSpan.FromMinutes(1),
-        };
-    });
-builder.Services.AddAuthorization();
+builder.Services.AddSingleton<IPasswordRotationState, PasswordRotationState>();
+builder.Services.Configure<PasswordRotationOptions>(
+    builder.Configuration.GetSection("Auth:PasswordRotation"));
+builder.Services.AddHostedService<PasswordRotationService>();
 
 // ---- brute-force backstop on the login endpoint ----------------------------
 // Fixed window per remote IP (default: 10 requests / minute). The Deployer's
@@ -82,42 +60,17 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new OpenApiInfo
+    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
     {
         Title = "DeployToolkit Registry API",
         Version = "v1",
         Description = "Central registry API for the DeployToolkit (Packager/Deployer). " +
-                      "Phase 1: username/password authentication against the registry database.",
-    });
-    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
-    {
-        Name = "Authorization",
-        Type = SecuritySchemeType.Http,
-        Scheme = "bearer",
-        BearerFormat = "JWT",
-        In = ParameterLocation.Header,
-        Description = "Paste the accessToken returned by POST /api/auth/authenticate.",
-    });
-    options.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
-        {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer",
-                },
-            },
-            Array.Empty<string>()
-        },
+                      "Phase 1: username/password authentication against the registry database " +
+                      "(token-free by design) with scheduled password rotation.",
     });
 });
 
 var app = builder.Build();
-
-// Fail fast if Auth:Jwt is misconfigured (missing/too-short signing key …).
-_ = app.Services.GetRequiredService<JwtTokenService>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -126,11 +79,10 @@ if (app.Environment.IsDevelopment())
         options.SwaggerEndpoint("/swagger/v1/swagger.json", "DeployToolkit Registry API v1"));
 }
 
-app.UseAuthentication();
-app.UseAuthorization();
 app.UseRateLimiter();
 
-// Schema + initial user BEFORE the first request is accepted.
+// Schema + initial user BEFORE the first request is accepted (the rotation
+// service starts in parallel and picks the users up on its first pass).
 await app.InitializeRegistryDatabaseAsync();
 
 // Plain health/identity probe for load balancers and smoke tests.
@@ -143,8 +95,8 @@ app.MapGet("/", () => Results.Ok(new
     endpoints = new[]
     {
         "POST /api/auth/authenticate",
-        "GET  /api/auth/me (Bearer token required)",
         "GET  /swagger (Development only)",
+        "background: password rotation (Auth:PasswordRotation)",
     },
 }))
 .WithTags("Health");
